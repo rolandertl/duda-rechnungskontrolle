@@ -2,9 +2,383 @@ import streamlit as st
 import pandas as pd
 import chardet
 from io import StringIO
-from utils.file_processor import FileProcessor
-from utils.data_analyzer import DataAnalyzer
-from utils.report_generator import ReportGenerator
+from urllib.parse import urlparse
+
+class FileProcessor:
+    """Klasse für die Verarbeitung von CSV-Dateien"""
+    
+    def __init__(self):
+        pass
+    
+    def detect_encoding(self, file_content):
+        """Erkennt das Encoding einer Datei"""
+        result = chardet.detect(file_content)
+        return result['encoding']
+    
+    def extract_domain(self, url):
+        """Extrahiert die Domain aus einer URL"""
+        if not url or url == 'nan':
+            return ''
+            
+        # URL normalisieren
+        url = str(url).strip()
+        if not url.startswith('http'):
+            url = 'https://' + url
+            
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+            
+            # www. entfernen für bessere Übereinstimmung
+            if domain.startswith('www.'):
+                domain = domain[4:]
+                
+            return domain
+        except:
+            # Fallback: einfache String-Manipulation
+            url = url.replace('https://', '').replace('http://', '')
+            domain = url.split('/')[0].lower()
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
+    
+    def fix_scientific_notation_ids(self, duda_df, crm_df):
+        """Repariert Site IDs die als wissenschaftliche Notation fehlinterpretiert wurden"""
+        
+        # Finde Einträge mit wissenschaftlicher Notation
+        scientific_mask = duda_df['Site Alias'].astype(str).str.contains(r'[eE][+-]', na=False, regex=True)
+        problematic_rows = duda_df[scientific_mask].copy()
+        
+        if len(problematic_rows) == 0:
+            return duda_df
+        
+        st.info(f"🔧 Repariere {len(problematic_rows)} Site IDs mit wissenschaftlicher Notation...")
+        
+        repairs_made = []
+        
+        # Für jeden problematischen Eintrag
+        for idx, row in problematic_rows.iterrows():
+            site_url = str(row.get('Site URL', '')).strip()
+            
+            if site_url and site_url != 'nan':
+                # Domain aus URL extrahieren
+                domain = self.extract_domain(site_url)
+                
+                # Im CRM nach dieser Domain suchen
+                if 'Domain' in crm_df.columns:
+                    crm_matches = crm_df[
+                        crm_df['Domain'].astype(str).str.contains(
+                            domain.replace('.', r'\.'), 
+                            case=False, 
+                            na=False, 
+                            regex=True
+                        )
+                    ]
+                    
+                    if len(crm_matches) == 1:
+                        # Eindeutige Übereinstimmung gefunden
+                        correct_id = crm_matches.iloc[0]['Site-ID-Duda']
+                        old_id = row['Site Alias']
+                        duda_df.at[idx, 'Site Alias'] = str(correct_id)
+                        repairs_made.append(f"✅ {old_id} → {correct_id} (via Domain: {domain})")
+                    elif len(crm_matches) > 1:
+                        repairs_made.append(f"⚠️ Mehrere CRM-Einträge für Domain {domain}")
+                    else:
+                        repairs_made.append(f"❌ Keine CRM-Übereinstimmung für Domain {domain}")
+                else:
+                    repairs_made.append(f"❌ Keine Domain-Spalte im CRM gefunden")
+            else:
+                repairs_made.append(f"❌ Keine gültige URL für Site ID {row['Site Alias']}")
+        
+        # Reparatur-Log anzeigen
+        if repairs_made:
+            with st.expander("🔧 Details der Site ID Reparaturen"):
+                for repair in repairs_made:
+                    st.text(repair)
+        
+        return duda_df
+    
+    def load_duda_file(self, uploaded_file):
+        """Lädt und verarbeitet eine Duda-Rechnungsdatei"""
+        try:
+            # Encoding erkennen
+            file_content = uploaded_file.read()
+            encoding = self.detect_encoding(file_content)
+            
+            # Als String dekodieren
+            content_str = file_content.decode(encoding)
+            
+            # CSV parsen - Site Alias als String erzwingen um wissenschaftliche Notation zu vermeiden
+            df = pd.read_csv(StringIO(content_str), dtype={'Site Alias': str})
+            
+            # Relevante Spalten prüfen
+            required_columns = ['Site Alias', 'Site URL', 'Charge Frequency', 'Should Charge']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            
+            if missing_columns:
+                raise ValueError(f"Fehlende Spalten in Duda-Datei: {missing_columns}")
+            
+            # Site Alias als String erzwingen und problematische IDs reparieren
+            df['Site Alias'] = df['Site Alias'].astype(str)
+            
+            # Datentypen korrigieren
+            df['Should Charge'] = pd.to_numeric(df['Should Charge'], errors='coerce').fillna(0).astype(int)
+            
+            # Nur verrechenbare Einträge filtern
+            df = df[df['Should Charge'] == 1].copy()
+            
+            return df
+            
+        except Exception as e:
+            raise Exception(f"Fehler beim Laden der Duda-Datei: {str(e)}")
+    
+    def load_crm_file(self, uploaded_file):
+        """Lädt und verarbeitet eine CRM-Exportdatei"""
+        try:
+            # Encoding erkennen
+            file_content = uploaded_file.read()
+            encoding = self.detect_encoding(file_content)
+            
+            # Als String dekodieren
+            content_str = file_content.decode(encoding)
+            
+            # CSV parsen (Semikolon als Delimiter für deutsche CSV)
+            df = pd.read_csv(StringIO(content_str), delimiter=';')
+            
+            # Verfügbare Spalten finden und Domain-Spalte identifizieren
+            available_columns = df.columns.tolist()
+            
+            # Domain-Spalte finden
+            domain_column = None
+            for col in available_columns:
+                if 'domain' in col.lower():
+                    domain_column = col
+                    break
+            
+            # Site-ID Spalte finden
+            site_id_column = None
+            for col in available_columns:
+                if 'duda' in col.lower() and 'site' in col.lower() and 'id' in col.lower():
+                    site_id_column = col
+                    break
+            
+            if site_id_column is None:
+                raise ValueError("Keine Duda-Site-ID Spalte gefunden")
+            
+            # Workflow-Status Spalte finden
+            status_column = None
+            for col in available_columns:
+                if 'workflow' in col.lower() and 'status' in col.lower():
+                    status_column = col
+                    break
+            
+            if status_column is None:
+                raise ValueError("Keine Workflow-Status Spalte gefunden")
+            
+            # Projektname Spalte finden
+            project_column = None
+            for col in available_columns:
+                if 'projekt' in col.lower():
+                    project_column = col
+                    break
+            
+            # DataFrame mit standardisierten Spaltennamen
+            result_df = pd.DataFrame()
+            result_df['Site-ID-Duda'] = df[site_id_column]
+            result_df['Workflow-Status'] = df[status_column]
+            result_df['Domain'] = df[domain_column] if domain_column else ''
+            if project_column:
+                result_df['Projektname'] = df[project_column]
+            else:
+                result_df['Projektname'] = 'Unbekannt'
+            
+            # Leere Site-IDs entfernen und Datentyp korrigieren
+            result_df = result_df[result_df['Site-ID-Duda'].notna()].copy()
+            result_df['Site-ID-Duda'] = result_df['Site-ID-Duda'].astype(str).str.strip()
+            
+            # Workflow-Status bereinigen
+            result_df['Workflow-Status'] = result_df['Workflow-Status'].astype(str).str.strip()
+            
+            return result_df
+            
+        except Exception as e:
+            raise Exception(f"Fehler beim Laden der CRM-Datei: {str(e)}")
+    
+    def categorize_charge_frequency(self, charge_frequency):
+        """Kategorisiert Charge Frequency in Produkttypen"""
+        if pd.isna(charge_frequency):
+            return "Unbekannt"
+        
+        freq_lower = str(charge_frequency).lower()
+        
+        if "dudaone monthly" in freq_lower:
+            return "Lizenz"
+        elif any(term in freq_lower for term in ["ecom", "store"]):
+            return "Shop"
+        elif "cookiebot" in freq_lower:
+            return "CCB"
+        else:
+            return "Apps"
+
+
+class DataAnalyzer:
+    """Klasse für die Datenanalyse und Identifikation von Problemen"""
+    
+    def __init__(self, duda_df, crm_df):
+        self.duda_df = duda_df.copy()
+        self.crm_df = crm_df.copy()
+        self.processor = FileProcessor()
+        
+        # WICHTIG: Problematische Site IDs über Domain-Abgleich reparieren
+        self.duda_df = self.processor.fix_scientific_notation_ids(self.duda_df, self.crm_df)
+        
+        # Produkttypen hinzufügen
+        self.duda_df['Produkttyp'] = self.duda_df['Charge Frequency'].apply(
+            self.processor.categorize_charge_frequency
+        )
+    
+    def is_status_ok(self, status):
+        """Prüft ob ein Workflow-Status als OK gilt"""
+        if pd.isna(status):
+            return False
+        
+        status_str = str(status).lower()
+        return "website online" in status_str
+    
+    def find_issues(self):
+        """Findet alle problematischen Einträge"""
+        issues = []
+        
+        for _, duda_row in self.duda_df.iterrows():
+            site_alias = str(duda_row['Site Alias']).strip()
+            
+            # CRM-Eintrag suchen
+            crm_match = self.crm_df[self.crm_df['Site-ID-Duda'] == site_alias]
+            
+            if crm_match.empty:
+                # Site nicht im CRM gefunden
+                issues.append({
+                    'Site_Alias': site_alias,
+                    'Site_URL': duda_row.get('Site URL', ''),
+                    'Produkttyp': duda_row['Produkttyp'],
+                    'Charge_Frequency': duda_row['Charge Frequency'],
+                    'CRM_Status': 'Nicht gefunden',
+                    'Projektname': 'Nicht gefunden',
+                    'Problem_Typ': 'Site nicht im CRM'
+                })
+            
+            else:
+                # CRM-Eintrag gefunden, Status prüfen
+                crm_row = crm_match.iloc[0]
+                workflow_status = crm_row['Workflow-Status']
+                
+                if not self.is_status_ok(workflow_status):
+                    # Für Apps: Prüfen ob es eine zugehörige "Website online" Site gibt
+                    if duda_row['Produkttyp'] in ['CCB', 'Apps']:
+                        # Prüfen ob es eine Lizenz-Site mit gleichem Alias und OK-Status gibt
+                        license_match = self.duda_df[
+                            (self.duda_df['Site Alias'] == site_alias) & 
+                            (self.duda_df['Produkttyp'] == 'Lizenz')
+                        ]
+                        
+                        if not license_match.empty:
+                            # Es gibt eine Lizenz-Site, diese sollte OK sein
+                            continue
+                        
+                        # Sonst ist es ein Problem
+                        issues.append({
+                            'Site_Alias': site_alias,
+                            'Site_URL': duda_row.get('Site URL', ''),
+                            'Produkttyp': duda_row['Produkttyp'],
+                            'Charge_Frequency': duda_row['Charge Frequency'],
+                            'CRM_Status': workflow_status,
+                            'Projektname': crm_row['Projektname'],
+                            'Problem_Typ': f'{duda_row["Produkttyp"]} ohne Website online'
+                        })
+                    
+                    else:
+                        # Für Lizenzen und Shops: Status muss OK sein
+                        issues.append({
+                            'Site_Alias': site_alias,
+                            'Site_URL': duda_row.get('Site URL', ''),
+                            'Produkttyp': duda_row['Produkttyp'],
+                            'Charge_Frequency': duda_row['Charge Frequency'],
+                            'CRM_Status': workflow_status,
+                            'Projektname': crm_row['Projektname'],
+                            'Problem_Typ': 'Abweichender Workflow-Status'
+                        })
+        
+        return pd.DataFrame(issues)
+    
+    def get_summary(self):
+        """Erstellt eine Zusammenfassung der Analyse"""
+        total_charged = len(self.duda_df)
+        issues_df = self.find_issues()
+        issues_count = len(issues_df)
+        ok_count = total_charged - issues_count
+        
+        # Breakdown nach Produkttyp
+        product_breakdown = {}
+        for product_type in self.duda_df['Produkttyp'].unique():
+            product_total = len(self.duda_df[self.duda_df['Produkttyp'] == product_type])
+            product_issues = len(issues_df[issues_df['Produkttyp'] == product_type]) if not issues_df.empty else 0
+            product_ok = product_total - product_issues
+            
+            product_breakdown[product_type] = {
+                'total': product_total,
+                'ok': product_ok,
+                'issues': product_issues
+            }
+        
+        return {
+            'total_charged': total_charged,
+            'ok_count': ok_count,
+            'issues_count': issues_count,
+            'product_breakdown': product_breakdown
+        }
+
+
+class ReportGenerator:
+    """Klasse für die Generierung von Berichten"""
+    
+    def __init__(self):
+        pass
+    
+    def generate_csv_report(self, issues_df, summary):
+        """Generiert einen CSV-Bericht der Kontrollergebnisse"""
+        output = StringIO()
+        
+        # Header mit Zusammenfassung
+        output.write("# Duda Rechnungskontrolle - Bericht\n")
+        output.write(f"# Datum: {pd.Timestamp.now().strftime('%d.%m.%Y %H:%M')}\n")
+        output.write("#\n")
+        output.write(f"# Zusammenfassung:\n")
+        output.write(f"# - Gesamt verrechnet: {summary['total_charged']}\n")
+        output.write(f"# - OK (Website online): {summary['ok_count']}\n")
+        output.write(f"# - Manuelle Kontrolle: {summary['issues_count']}\n")
+        output.write("#\n")
+        
+        # Produkttyp-Breakdown
+        if summary['product_breakdown']:
+            output.write("# Breakdown nach Produkttyp:\n")
+            for product, data in summary['product_breakdown'].items():
+                output.write(f"# - {product}: {data['total']} gesamt, {data['ok']} OK, {data['issues']} Probleme\n")
+            output.write("#\n")
+        
+        output.write("# Problematische Einträge:\n")
+        output.write("#\n")
+        
+        # Problematische Einträge als CSV
+        if not issues_df.empty:
+            # DataFrame zu CSV konvertieren
+            csv_string = issues_df.to_csv(index=False, sep=';', encoding='utf-8')
+            output.write(csv_string)
+        else:
+            output.write("Site_Alias;Site_URL;Produkttyp;Charge_Frequency;CRM_Status;Projektname;Problem_Typ\n")
+            output.write("# Keine problematischen Einträge gefunden!\n")
+        
+        return output.getvalue()
+
 
 def main():
     st.set_page_config(
@@ -102,6 +476,7 @@ def main():
             - Downloadbare Berichte
             - Übersichtliche Darstellung
             """)
+
 
 def display_results(issues, summary, duda_df, crm_df):
     """Zeigt die Analyseergebnisse an"""
@@ -221,6 +596,7 @@ def display_results(issues, summary, duda_df, crm_df):
             st.text(f"Zeilen: {len(crm_df)}")
             with_duda_id = len(crm_df[crm_df['Site-ID-Duda'].notna()])
             st.text(f"Mit Duda-ID: {with_duda_id}")
+
 
 if __name__ == "__main__":
     main()
