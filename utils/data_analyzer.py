@@ -9,6 +9,9 @@ class DataAnalyzer:
         self.crm_df = crm_df.copy()
         self.processor = FileProcessor()
         
+        # WICHTIG: Problematische Site IDs über Domain-Abgleich reparieren
+        self.duda_df = self.processor.fix_scientific_notation_ids(self.duda_df, self.crm_df)
+        
         # Produkttypen hinzufügen
         self.duda_df['Produkttyp'] = self.duda_df['Charge Frequency'].apply(
             self.processor.categorize_charge_frequency
