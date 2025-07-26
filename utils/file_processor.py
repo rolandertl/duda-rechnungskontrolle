@@ -8,7 +8,80 @@ class FileProcessor:
     def __init__(self):
         pass
     
-    def convert_scientific_to_hex(self, value):
+    def fix_scientific_notation_ids(self, duda_df, crm_df):
+        """Repariert Site IDs die als wissenschaftliche Notation fehlinterpretiert wurden"""
+        
+        # Finde Einträge mit wissenschaftlicher Notation
+        scientific_mask = duda_df['Site Alias'].astype(str).str.contains(r'[eE][+-]', na=False, regex=True)
+        problematic_rows = duda_df[scientific_mask].copy()
+        
+        if len(problematic_rows) == 0:
+            return duda_df
+        
+        print(f"🔧 Repariere {len(problematic_rows)} Site IDs mit wissenschaftlicher Notation...")
+        
+        # Für jeden problematischen Eintrag
+        for idx, row in problematic_rows.iterrows():
+            site_url = str(row.get('Site URL', '')).strip()
+            
+            if site_url and site_url != 'nan':
+                # Domain aus URL extrahieren
+                domain = self.extract_domain(site_url)
+                
+                # Im CRM nach dieser Domain suchen
+                crm_matches = crm_df[
+                    crm_df['Domain'].astype(str).str.contains(
+                        domain.replace('.', r'\.'), 
+                        case=False, 
+                        na=False, 
+                        regex=True
+                    )
+                ]
+                
+                if len(crm_matches) == 1:
+                    # Eindeutige Übereinstimmung gefunden
+                    correct_id = crm_matches.iloc[0]['Site-ID-Duda']
+                    old_id = row['Site Alias']
+                    duda_df.at[idx, 'Site Alias'] = str(correct_id)
+                    print(f"  ✅ {old_id} → {correct_id} (via Domain: {domain})")
+                elif len(crm_matches) > 1:
+                    print(f"  ⚠️ Mehrere CRM-Einträge für Domain {domain} gefunden")
+                else:
+                    print(f"  ❌ Keine CRM-Übereinstimmung für Domain {domain}")
+            else:
+                print(f"  ❌ Keine gültige URL für Site ID {row['Site Alias']}")
+        
+        return duda_df
+    
+    def extract_domain(self, url):
+        """Extrahiert die Domain aus einer URL"""
+        if not url or url == 'nan':
+            return ''
+            
+        # URL normalisieren
+        url = str(url).strip()
+        if not url.startswith('http'):
+            url = 'https://' + url
+            
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+            
+            # www. entfernen für bessere Übereinstimmung
+            if domain.startswith('www.'):
+                domain = domain[4:]
+                
+            return domain
+        except:
+            # Fallback: einfache String-Manipulation
+            url = url.replace('https://', '').replace('http://', '')
+            domain = url.split('/')[0].lower()
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
+    
+    def convert_scientific_to_hex(self, value)::
         """Konvertiert wissenschaftliche Notation zurück zu Hex-String für Site IDs"""
         if pd.isna(value):
             return value
@@ -60,8 +133,8 @@ class FileProcessor:
             if missing_columns:
                 raise ValueError(f"Fehlende Spalten in Duda-Datei: {missing_columns}")
             
-            # Site Alias von wissenschaftlicher Notation zurück konvertieren
-            df['Site Alias'] = df['Site Alias'].apply(self.convert_scientific_to_hex)
+            # Site Alias als String erzwingen und problematische IDs reparieren
+            df['Site Alias'] = df['Site Alias'].astype(str)
             
             # Datentypen korrigieren
             df['Should Charge'] = pd.to_numeric(df['Should Charge'], errors='coerce').fillna(0).astype(int)
@@ -95,8 +168,15 @@ class FileProcessor:
                 'Projektname': 'Projektname'
             }
             
-            # Verfügbare Spalten finden
+            # Verfügbare Spalten finden und Domain-Spalte identifizieren
             available_columns = df.columns.tolist()
+            
+            # Domain-Spalte finden
+            domain_column = None
+            for col in available_columns:
+                if 'domain' in col.lower():
+                    domain_column = col
+                    break
             
             # Site-ID Spalte finden
             site_id_column = None
@@ -129,6 +209,7 @@ class FileProcessor:
             result_df = pd.DataFrame()
             result_df['Site-ID-Duda'] = df[site_id_column]
             result_df['Workflow-Status'] = df[status_column]
+            result_df['Domain'] = df[domain_column] if domain_column else ''
             if project_column:
                 result_df['Projektname'] = df[project_column]
             else:
