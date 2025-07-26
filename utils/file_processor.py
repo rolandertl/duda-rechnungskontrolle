@@ -8,6 +8,33 @@ class FileProcessor:
     def __init__(self):
         pass
     
+    def convert_scientific_to_hex(self, value):
+        """Konvertiert wissenschaftliche Notation zurück zu Hex-String für Site IDs"""
+        if pd.isna(value):
+            return value
+            
+        value_str = str(value).strip()
+        
+        # Prüfen ob es wissenschaftliche Notation ist (enthält E+ oder e+)
+        if ('e+' in value_str.lower() or 'e-' in value_str.lower()):
+            try:
+                # Als Float parsen und zu Integer konvertieren
+                float_val = float(value_str)
+                
+                # Nur wenn es eine sehr große Zahl ist (typisch für falsch interpretierte Hex-IDs)
+                if float_val > 1e10:
+                    # Zurück zu Hex konvertieren (ohne 0x Prefix)
+                    hex_val = hex(int(float_val))[2:]
+                    return hex_val
+                else:
+                    # Kleine wissenschaftliche Zahlen beibehalten
+                    return value_str
+            except (ValueError, OverflowError):
+                # Wenn Konvertierung fehlschlägt, ursprünglichen Wert zurückgeben
+                return value_str
+        
+        return value_str
+    
     def detect_encoding(self, file_content):
         """Erkennt das Encoding einer Datei"""
         result = chardet.detect(file_content)
@@ -23,8 +50,8 @@ class FileProcessor:
             # Als String dekodieren
             content_str = file_content.decode(encoding)
             
-            # CSV parsen
-            df = pd.read_csv(StringIO(content_str))
+            # CSV parsen - Site Alias als String erzwingen um wissenschaftliche Notation zu vermeiden
+            df = pd.read_csv(StringIO(content_str), dtype={'Site Alias': str})
             
             # Relevante Spalten prüfen
             required_columns = ['Site Alias', 'Site URL', 'Charge Frequency', 'Should Charge']
@@ -32,6 +59,9 @@ class FileProcessor:
             
             if missing_columns:
                 raise ValueError(f"Fehlende Spalten in Duda-Datei: {missing_columns}")
+            
+            # Site Alias von wissenschaftlicher Notation zurück konvertieren
+            df['Site Alias'] = df['Site Alias'].apply(self.convert_scientific_to_hex)
             
             # Datentypen korrigieren
             df['Should Charge'] = pd.to_numeric(df['Should Charge'], errors='coerce').fillna(0).astype(int)
