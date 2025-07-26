@@ -58,8 +58,29 @@ class FileProcessor:
         
         # Für jeden problematischen Eintrag
         for idx, row in problematic_rows.iterrows():
+            site_alias_scientific = str(row['Site Alias']).strip()
             site_url = str(row.get('Site URL', '')).strip()
+            product_type = self.categorize_charge_frequency(row.get('Charge Frequency', ''))
             
+            repaired = False
+            
+            # Strategie 1: Für CCB/Apps - suche nach gleicher wissenschaftlicher Notation mit anderem Produkttyp
+            if product_type in ['CCB', 'Apps']:
+                # Finde andere Einträge mit derselben wissenschaftlichen Notation aber anderer Charge Frequency
+                same_scientific_id = duda_df[
+                    (duda_df['Site Alias'] == site_alias_scientific) & 
+                    (duda_df.index != idx)
+                ]
+                
+                if not same_scientific_id.empty:
+                    # Nehme die Site URL von einem der anderen Einträge (meist Lizenz)
+                    for _, other_row in same_scientific_id.iterrows():
+                        other_url = str(other_row.get('Site URL', '')).strip()
+                        if other_url and other_url != 'nan':
+                            site_url = other_url
+                            break
+            
+            # Strategie 2: Domain-basierte Reparatur (für alle Produkttypen)
             if site_url and site_url != 'nan':
                 # Domain aus URL extrahieren
                 domain = self.extract_domain(site_url)
@@ -77,18 +98,31 @@ class FileProcessor:
                     
                     if len(crm_matches) == 1:
                         # Eindeutige Übereinstimmung gefunden
-                        correct_id = crm_matches.iloc[0]['Site-ID-Duda']
-                        old_id = row['Site Alias']
-                        duda_df.at[idx, 'Site Alias'] = str(correct_id)
-                        repairs_made.append(f"✅ {old_id} → {correct_id} (via Domain: {domain})")
+                        correct_id = str(crm_matches.iloc[0]['Site-ID-Duda']).strip()
+                        
+                        # Alle Einträge mit dieser wissenschaftlichen Notation korrigieren
+                        all_same_scientific = duda_df['Site Alias'] == site_alias_scientific
+                        duda_df.loc[all_same_scientific, 'Site Alias'] = correct_id
+                        
+                        # Auch die Site URL für alle korrigieren falls leer
+                        empty_url_mask = (
+                            (duda_df['Site Alias'] == correct_id) & 
+                            ((duda_df['Site URL'].isna()) | (duda_df['Site URL'] == '') | (duda_df['Site URL'] == 'nan'))
+                        )
+                        duda_df.loc[empty_url_mask, 'Site URL'] = site_url
+                        
+                        repairs_made.append(f"✅ {site_alias_scientific} → {correct_id} (via Domain: {domain}) - {all_same_scientific.sum()} Einträge")
+                        repaired = True
+                        
                     elif len(crm_matches) > 1:
                         repairs_made.append(f"⚠️ Mehrere CRM-Einträge für Domain {domain}")
                     else:
                         repairs_made.append(f"❌ Keine CRM-Übereinstimmung für Domain {domain}")
                 else:
                     repairs_made.append(f"❌ Keine Domain-Spalte im CRM gefunden")
-            else:
-                repairs_made.append(f"❌ Keine gültige URL für Site ID {row['Site Alias']}")
+            
+            if not repaired:
+                repairs_made.append(f"❌ Konnte {site_alias_scientific} ({product_type}) nicht reparieren")
         
         # Reparatur-Log anzeigen
         if repairs_made:
@@ -553,14 +587,27 @@ def display_results(issues, summary, duda_df, crm_df):
         
         filtered_issues = issues if selected_type == 'Alle' else issues[issues['Problem_Typ'] == selected_type]
         
+        # Site ID Links für Duda Dashboard hinzufügen
+        if not filtered_issues.empty:
+            filtered_issues_display = filtered_issues.copy()
+            filtered_issues_display['Duda_Dashboard'] = filtered_issues_display['Site_Alias'].apply(
+                lambda x: f"https://my.duda.co/home/dashboard/overview/{x}" if pd.notna(x) and str(x).strip() else ""
+            )
+        else:
+            filtered_issues_display = filtered_issues
+        
         # Anzeige der Probleme
         st.dataframe(
-            filtered_issues,
+            filtered_issues_display,
             use_container_width=True,
             hide_index=True,
             column_config={
                 'Site_Alias': 'Site ID',
                 'Site_URL': st.column_config.LinkColumn('Site URL'),
+                'Duda_Dashboard': st.column_config.LinkColumn(
+                    'Duda Dashboard',
+                    help="Direkt zum Duda-Dashboard"
+                ),
                 'Produkttyp': 'Produkt',
                 'CRM_Status': 'CRM Status',
                 'Problem_Typ': 'Problem',
