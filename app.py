@@ -55,32 +55,37 @@ class FileProcessor:
         st.info(f"🔧 Repariere {len(problematic_rows)} Site IDs mit wissenschaftlicher Notation...")
         
         repairs_made = []
+        repaired_scientific_ids = set()  # Track welche IDs bereits repariert wurden
         
         # Für jeden problematischen Eintrag
         for idx, row in problematic_rows.iterrows():
             site_alias_scientific = str(row['Site Alias']).strip()
+            
+            # Skip wenn diese ID bereits repariert wurde
+            if site_alias_scientific in repaired_scientific_ids:
+                continue
+                
             site_url = str(row.get('Site URL', '')).strip()
             product_type = self.categorize_charge_frequency(row.get('Charge Frequency', ''))
             
             repaired = False
             
-            # Strategie 1: Für CCB/Apps - suche nach gleicher wissenschaftlicher Notation mit anderem Produkttyp
-            if product_type in ['CCB', 'Apps']:
-                # Finde andere Einträge mit derselben wissenschaftlichen Notation aber anderer Charge Frequency
+            # Strategie 1: Für CCB/Apps - suche nach URL bei anderen Einträgen mit derselben wissenschaftlichen Notation
+            if product_type in ['CCB', 'Apps'] and (not site_url or site_url == 'nan'):
+                # Finde andere Einträge mit derselben wissenschaftlichen Notation aber mit URL
                 same_scientific_id = duda_df[
                     (duda_df['Site Alias'] == site_alias_scientific) & 
-                    (duda_df.index != idx)
+                    (duda_df['Site URL'].notna()) & 
+                    (duda_df['Site URL'] != '') & 
+                    (duda_df['Site URL'] != 'nan')
                 ]
                 
                 if not same_scientific_id.empty:
-                    # Nehme die Site URL von einem der anderen Einträge (meist Lizenz)
-                    for _, other_row in same_scientific_id.iterrows():
-                        other_url = str(other_row.get('Site URL', '')).strip()
-                        if other_url and other_url != 'nan':
-                            site_url = other_url
-                            break
+                    # Nehme die URL vom ersten verfügbaren Eintrag (meist Lizenz)
+                    site_url = str(same_scientific_id.iloc[0]['Site URL']).strip()
+                    repairs_made.append(f"📋 {product_type} {site_alias_scientific}: URL von Lizenz-Eintrag übernommen ({site_url})")
             
-            # Strategie 2: Domain-basierte Reparatur (für alle Produkttypen)
+            # Strategie 2: Domain-basierte Reparatur (für alle Produkttypen mit gültiger URL)
             if site_url and site_url != 'nan':
                 # Domain aus URL extrahieren
                 domain = self.extract_domain(site_url)
@@ -102,6 +107,7 @@ class FileProcessor:
                         
                         # Alle Einträge mit dieser wissenschaftlichen Notation korrigieren
                         all_same_scientific = duda_df['Site Alias'] == site_alias_scientific
+                        count_repaired = all_same_scientific.sum()
                         duda_df.loc[all_same_scientific, 'Site Alias'] = correct_id
                         
                         # Auch die Site URL für alle korrigieren falls leer
@@ -111,7 +117,8 @@ class FileProcessor:
                         )
                         duda_df.loc[empty_url_mask, 'Site URL'] = site_url
                         
-                        repairs_made.append(f"✅ {site_alias_scientific} → {correct_id} (via Domain: {domain}) - {all_same_scientific.sum()} Einträge")
+                        repairs_made.append(f"✅ {site_alias_scientific} → {correct_id} (via Domain: {domain}) - {count_repaired} Einträge")
+                        repaired_scientific_ids.add(site_alias_scientific)
                         repaired = True
                         
                     elif len(crm_matches) > 1:
@@ -121,7 +128,7 @@ class FileProcessor:
                 else:
                     repairs_made.append(f"❌ Keine Domain-Spalte im CRM gefunden")
             
-            if not repaired:
+            if not repaired and site_alias_scientific not in repaired_scientific_ids:
                 repairs_made.append(f"❌ Konnte {site_alias_scientific} ({product_type}) nicht reparieren")
         
         # Reparatur-Log anzeigen
@@ -607,13 +614,10 @@ def display_results(issues, summary, duda_df, crm_df):
         filtered_issues = issues if selected_type == 'Alle' else issues[issues['Problem_Typ'] == selected_type]
         
         # Site ID Links für Duda Dashboard hinzufügen
-        if not filtered_issues.empty:
-            filtered_issues_display = filtered_issues.copy()
-            filtered_issues_display['Duda_Dashboard'] = filtered_issues_display['Site_Alias'].apply(
-                lambda x: f"https://my.duda.co/home/dashboard/overview/{x}" if pd.notna(x) and str(x).strip() else ""
-            )
-        else:
-            filtered_issues_display = filtered_issues
+        filtered_issues_display = filtered_issues.copy()
+        filtered_issues_display['Duda_Dashboard'] = filtered_issues_display['Site_Alias'].apply(
+            lambda x: f"https://my.duda.co/home/dashboard/overview/{x}" if pd.notna(x) and str(x).strip() else ""
+        )
         
         # Anzeige der Probleme
         st.dataframe(
