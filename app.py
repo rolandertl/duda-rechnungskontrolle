@@ -188,6 +188,7 @@ class FileProcessor:
             
             # Verfügbare Spalten finden und Domain-Spalte identifizieren
             available_columns = df.columns.tolist()
+            st.write(f"🔍 Alle verfügbaren Spalten: {available_columns}")
             
             # Domain-Spalte finden
             domain_column = None
@@ -200,17 +201,29 @@ class FileProcessor:
             site_id_column = None
             landingpage_id_column = None
             
+            st.write("🔍 Suche nach Duda-ID-Spalten...")
             for col in available_columns:
                 col_lower = col.lower()
+                st.write(f"  Prüfe Spalte: '{col}' (lowercase: '{col_lower}')")
+                
                 if 'duda' in col_lower and 'site' in col_lower and 'id' in col_lower:
-                    # Exakte Übereinstimmung für Landingpage-Spalte (verschiedene Schreibweisen)
+                    st.write(f"    ✅ Enthält 'duda', 'site' und 'id'")
+                    
+                    # Exakte Übereinstimmung für Landingpage-Spalte
                     if col_lower in ['site-id-duda', 'site_id_duda']:
-                        landingpage_id_column = col  # Landingpage-Spalte
-                        st.write(f"  🎯 Landingpage-Spalte erkannt: {col}")
+                        landingpage_id_column = col
+                        st.write(f"    🎯 Als LANDINGPAGE-Spalte erkannt: {col}")
                     # Standard-Spalte (Duda-Site-ID)
                     elif col_lower in ['duda-site-id', 'duda_site_id']:
-                        site_id_column = col  # Standard-Spalte
-                        st.write(f"  🎯 Standard-Spalte erkannt: {col}")
+                        site_id_column = col
+                        st.write(f"    🎯 Als STANDARD-Spalte erkannt: {col}")
+                    else:
+                        st.write(f"    ⚠️ Unbekanntes Muster: {col}")
+                else:
+                    st.write(f"    ❌ Enthält nicht alle Keywords")
+            
+            st.write(f"✅ Gefundene Standard-Spalte: {site_id_column}")
+            st.write(f"✅ Gefundene Landingpage-Spalte: {landingpage_id_column}")
             
             if site_id_column is None:
                 raise ValueError("Keine Standard Duda-Site-ID Spalte gefunden")
@@ -539,12 +552,12 @@ def main():
             - CCB: Cookiebot Pro monthly
             - Apps: AudioEye, Paperform, etc.
             
-            **App Version: v12** 🔄 - Landingpage-Spaltenerkennung gefixt
+            **App Version: v13** 🔄 - Detailliertes Spalten-Debug
             """)
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v12*", help="Landingpage-Spaltenerkennung gefixt")
+        st.sidebar.markdown("*App Version: v13*", help="Detailliertes Spalten-Debug")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
