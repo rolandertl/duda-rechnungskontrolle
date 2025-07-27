@@ -201,11 +201,16 @@ class FileProcessor:
             landingpage_id_column = None
             
             for col in available_columns:
-                if 'duda' in col.lower() and 'site' in col.lower() and 'id' in col.lower():
-                    if 'site-id-duda' == col.lower():
+                col_lower = col.lower()
+                if 'duda' in col_lower and 'site' in col_lower and 'id' in col_lower:
+                    # Exakte Übereinstimmung für Landingpage-Spalte (verschiedene Schreibweisen)
+                    if col_lower in ['site-id-duda', 'site_id_duda']:
                         landingpage_id_column = col  # Landingpage-Spalte
-                    else:
+                        st.write(f"  🎯 Landingpage-Spalte erkannt: {col}")
+                    # Standard-Spalte (Duda-Site-ID)
+                    elif col_lower in ['duda-site-id', 'duda_site_id']:
                         site_id_column = col  # Standard-Spalte
+                        st.write(f"  🎯 Standard-Spalte erkannt: {col}")
             
             if site_id_column is None:
                 raise ValueError("Keine Standard Duda-Site-ID Spalte gefunden")
@@ -534,12 +539,12 @@ def main():
             - CCB: Cookiebot Pro monthly
             - Apps: AudioEye, Paperform, etc.
             
-            **App Version: v11** 🔄 - Debug-Modus für Landingpage-IDs
+            **App Version: v12** 🔄 - Landingpage-Spaltenerkennung gefixt
             """)
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v11*", help="Debug-Version für Landingpage-Probleme")
+        st.sidebar.markdown("*App Version: v12*", help="Landingpage-Spaltenerkennung gefixt")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
