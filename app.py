@@ -252,6 +252,8 @@ class FileProcessor:
             # WICHTIG: Zusätzliche Zeilen für Landingpages erstellen
             landingpage_rows = []
             if landingpage_id_column is not None:
+                st.info(f"🔍 Verarbeite Landingpage-IDs aus Spalte: {landingpage_id_column}")
+                
                 for idx, row in result_df.iterrows():
                     landingpage_id = row['Landingpage-ID']
                     if landingpage_id and landingpage_id != '' and landingpage_id != 'nan':
@@ -264,11 +266,17 @@ class FileProcessor:
                                 'Projektname': f"{row['Projektname']} (Landingpage)",
                                 'Landingpage-ID': landingpage_id
                             })
+                            st.write(f"  ➕ Landingpage-ID hinzugefügt: {landingpage_id}")
                 
                 # Landingpage-Zeilen hinzufügen
                 if landingpage_rows:
+                    st.success(f"✅ {len(landingpage_rows)} Landingpage-Einträge hinzugefügt")
                     landingpage_df = pd.DataFrame(landingpage_rows)
                     result_df = pd.concat([result_df, landingpage_df], ignore_index=True)
+                else:
+                    st.warning("⚠️ Keine neuen Landingpage-IDs zum Hinzufügen gefunden")
+            else:
+                st.warning("❌ Keine Landingpage-Spalte im CRM gefunden")
             
             # Workflow-Status bereinigen
             result_df['Workflow-Status'] = result_df['Workflow-Status'].astype(str).str.strip()
@@ -323,11 +331,38 @@ class DataAnalyzer:
         """Findet alle problematischen Einträge"""
         issues = []
         
+        # Debug: Spezielle IDs verfolgen
+        debug_ids = ['38f60219', 'aeda899f']
+        
         for _, duda_row in self.duda_df.iterrows():
             site_alias = str(duda_row['Site Alias']).strip()
             
+            # Debug-Output für spezielle IDs
+            if site_alias in debug_ids:
+                st.write(f"🔍 DEBUG - Verarbeite ID: {site_alias}")
+                st.write(f"  Produkttyp: {duda_row['Produkttyp']}")
+                st.write(f"  Suche im CRM...")
+            
             # CRM-Eintrag suchen - direkte Suche in der kombinierten Site-ID-Duda Spalte
             crm_match = self.crm_df[self.crm_df['Site-ID-Duda'] == site_alias]
+            
+            # Debug für spezielle IDs
+            if site_alias in debug_ids:
+                st.write(f"  CRM-Treffer gefunden: {len(crm_match)}")
+                if len(crm_match) > 0:
+                    st.write(f"  Workflow-Status: {crm_match.iloc[0]['Workflow-Status']}")
+                    st.write(f"  Projektname: {crm_match.iloc[0]['Projektname']}")
+                else:
+                    # Schaue in allen verfügbaren Site-IDs
+                    all_crm_ids = self.crm_df['Site-ID-Duda'].unique()
+                    if site_alias in all_crm_ids:
+                        st.write(f"  ❌ ID existiert im CRM, aber nicht gefunden!")
+                    else:
+                        st.write(f"  ❌ ID wirklich nicht im CRM vorhanden")
+                        # Zeige ähnliche IDs
+                        similar = [id for id in all_crm_ids if str(id).startswith(site_alias[:6])]
+                        if similar:
+                            st.write(f"  Ähnliche IDs: {similar[:5]}")
             
             if crm_match.empty:
                 # Site nicht im CRM gefunden
@@ -499,12 +534,12 @@ def main():
             - CCB: Cookiebot Pro monthly
             - Apps: AudioEye, Paperform, etc.
             
-            **App Version: v10** 🔄
+            **App Version: v11** 🔄 - Debug-Modus für Landingpage-IDs
             """)
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v10*", help="Aktuelle Code-Version")
+        st.sidebar.markdown("*App Version: v11*", help="Debug-Version für Landingpage-Probleme")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
