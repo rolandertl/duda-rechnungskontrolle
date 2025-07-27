@@ -249,6 +249,27 @@ class FileProcessor:
                 result_df['Landingpage-ID'] = result_df['Landingpage-ID'].astype(str).str.strip()
                 result_df.loc[result_df['Landingpage-ID'] == 'nan', 'Landingpage-ID'] = ''
             
+            # WICHTIG: Zusätzliche Zeilen für Landingpages erstellen
+            landingpage_rows = []
+            if landingpage_id_column is not None:
+                for idx, row in result_df.iterrows():
+                    landingpage_id = row['Landingpage-ID']
+                    if landingpage_id and landingpage_id != '' and landingpage_id != 'nan':
+                        # Nur hinzufügen wenn nicht bereits in Standard-Spalte vorhanden
+                        if landingpage_id not in result_df['Site-ID-Duda'].values:
+                            landingpage_rows.append({
+                                'Site-ID-Duda': landingpage_id,
+                                'Workflow-Status': row['Workflow-Status'],
+                                'Domain': row['Domain'],
+                                'Projektname': f"{row['Projektname']} (Landingpage)",
+                                'Landingpage-ID': landingpage_id
+                            })
+                
+                # Landingpage-Zeilen hinzufügen
+                if landingpage_rows:
+                    landingpage_df = pd.DataFrame(landingpage_rows)
+                    result_df = pd.concat([result_df, landingpage_df], ignore_index=True)
+            
             # Workflow-Status bereinigen
             result_df['Workflow-Status'] = result_df['Workflow-Status'].astype(str).str.strip()
             
@@ -305,18 +326,11 @@ class DataAnalyzer:
         for _, duda_row in self.duda_df.iterrows():
             site_alias = str(duda_row['Site Alias']).strip()
             
-            # CRM-Eintrag suchen - erst in Standard-Spalte, dann in Landingpage-Spalte
+            # CRM-Eintrag suchen - direkte Suche in der kombinierten Site-ID-Duda Spalte
             crm_match = self.crm_df[self.crm_df['Site-ID-Duda'] == site_alias]
             
-            # Falls nicht gefunden, in Landingpage-Spalte suchen
-            if crm_match.empty and 'Landingpage-ID' in self.crm_df.columns:
-                crm_match = self.crm_df[
-                    (self.crm_df['Landingpage-ID'] == site_alias) & 
-                    (self.crm_df['Landingpage-ID'] != '')
-                ]
-            
             if crm_match.empty:
-                # Site nicht im CRM gefunden (weder Standard noch Landingpage)
+                # Site nicht im CRM gefunden
                 issues.append({
                     'Site_Alias': site_alias,
                     'Site_URL': duda_row.get('Site URL', ''),
@@ -484,7 +498,13 @@ def main():
             - Shop: ecom*/store*
             - CCB: Cookiebot Pro monthly
             - Apps: AudioEye, Paperform, etc.
+            
+            **App Version: v10** 🔄
             """)
+        
+        # Version Info auch als kleine Badge
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("*App Version: v10*", help="Aktuelle Code-Version")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
@@ -675,7 +695,17 @@ def display_results(issues, summary, duda_df, crm_df):
                     (crm_df['Landingpage-ID'] != 'nan')
                 ])
                 st.text(f"Mit Landingpage-ID: {with_landingpage_id}")
-                st.text(f"Gesamt IDs: {with_duda_id + with_landingpage_id}")
+                
+                # Gesamtanzahl einzigartiger IDs
+                all_ids = set()
+                all_ids.update(crm_df['Site-ID-Duda'].dropna().astype(str).str.strip())
+                if 'Landingpage-ID' in crm_df.columns:
+                    landingpage_ids = crm_df['Landingpage-ID'].dropna().astype(str).str.strip()
+                    landingpage_ids = landingpage_ids[landingpage_ids != 'nan']
+                    all_ids.update(landingpage_ids)
+                st.text(f"Einzigartige IDs gesamt: {len(all_ids)}")
+            else:
+                st.text("Keine Landingpage-Spalte gefunden")
 
 
 if __name__ == "__main__":
