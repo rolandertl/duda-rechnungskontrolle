@@ -189,15 +189,19 @@ class FileProcessor:
                     domain_column = col
                     break
             
-            # Site-ID Spalte finden
+            # Site-ID Spalten finden (Standard + Landingpage)
             site_id_column = None
+            landingpage_id_column = None
+            
             for col in available_columns:
                 if 'duda' in col.lower() and 'site' in col.lower() and 'id' in col.lower():
-                    site_id_column = col
-                    break
+                    if 'site-id-duda' == col.lower():
+                        landingpage_id_column = col  # Landingpage-Spalte
+                    else:
+                        site_id_column = col  # Standard-Spalte
             
             if site_id_column is None:
-                raise ValueError("Keine Duda-Site-ID Spalte gefunden")
+                raise ValueError("Keine Standard Duda-Site-ID Spalte gefunden")
             
             # Workflow-Status Spalte finden
             status_column = None
@@ -216,19 +220,27 @@ class FileProcessor:
                     project_column = col
                     break
             
-            # DataFrame mit standardisierten Spaltennamen
+            # DataFrame mit standardisierten Spaltennamen erstellen
             result_df = pd.DataFrame()
             result_df['Site-ID-Duda'] = df[site_id_column]
             result_df['Workflow-Status'] = df[status_column]
             result_df['Domain'] = df[domain_column] if domain_column else ''
-            if project_column:
-                result_df['Projektname'] = df[project_column]
+            result_df['Projektname'] = df[project_column] if project_column else 'Unbekannt'
+            
+            # Landingpage-IDs hinzufügen falls vorhanden
+            if landingpage_id_column is not None:
+                result_df['Landingpage-ID'] = df[landingpage_id_column]
             else:
-                result_df['Projektname'] = 'Unbekannt'
+                result_df['Landingpage-ID'] = ''
             
             # Leere Site-IDs entfernen und Datentyp korrigieren
             result_df = result_df[result_df['Site-ID-Duda'].notna()].copy()
             result_df['Site-ID-Duda'] = result_df['Site-ID-Duda'].astype(str).str.strip()
+            
+            # Landingpage-IDs bereinigen
+            if landingpage_id_column is not None:
+                result_df['Landingpage-ID'] = result_df['Landingpage-ID'].astype(str).str.strip()
+                result_df.loc[result_df['Landingpage-ID'] == 'nan', 'Landingpage-ID'] = ''
             
             # Workflow-Status bereinigen
             result_df['Workflow-Status'] = result_df['Workflow-Status'].astype(str).str.strip()
@@ -286,11 +298,18 @@ class DataAnalyzer:
         for _, duda_row in self.duda_df.iterrows():
             site_alias = str(duda_row['Site Alias']).strip()
             
-            # CRM-Eintrag suchen
+            # CRM-Eintrag suchen - erst in Standard-Spalte, dann in Landingpage-Spalte
             crm_match = self.crm_df[self.crm_df['Site-ID-Duda'] == site_alias]
             
+            # Falls nicht gefunden, in Landingpage-Spalte suchen
+            if crm_match.empty and 'Landingpage-ID' in self.crm_df.columns:
+                crm_match = self.crm_df[
+                    (self.crm_df['Landingpage-ID'] == site_alias) & 
+                    (self.crm_df['Landingpage-ID'] != '')
+                ]
+            
             if crm_match.empty:
-                # Site nicht im CRM gefunden
+                # Site nicht im CRM gefunden (weder Standard noch Landingpage)
                 issues.append({
                     'Site_Alias': site_alias,
                     'Site_URL': duda_row.get('Site URL', ''),
@@ -642,7 +661,17 @@ def display_results(issues, summary, duda_df, crm_df):
             st.subheader("CRM-Daten")
             st.text(f"Zeilen: {len(crm_df)}")
             with_duda_id = len(crm_df[crm_df['Site-ID-Duda'].notna()])
-            st.text(f"Mit Duda-ID: {with_duda_id}")
+            st.text(f"Mit Standard Duda-ID: {with_duda_id}")
+            
+            # Landingpage-IDs prüfen falls vorhanden
+            if 'Landingpage-ID' in crm_df.columns:
+                with_landingpage_id = len(crm_df[
+                    (crm_df['Landingpage-ID'].notna()) & 
+                    (crm_df['Landingpage-ID'] != '') & 
+                    (crm_df['Landingpage-ID'] != 'nan')
+                ])
+                st.text(f"Mit Landingpage-ID: {with_landingpage_id}")
+                st.text(f"Gesamt IDs: {with_duda_id + with_landingpage_id}")
 
 
 if __name__ == "__main__":
