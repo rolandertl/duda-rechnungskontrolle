@@ -272,25 +272,54 @@ class FileProcessor:
             if landingpage_id_column is not None:
                 st.info(f"🔍 Verarbeite Landingpage-IDs aus Spalte: {landingpage_id_column}")
                 
-                for idx, row in result_df.iterrows():
-                    landingpage_id = row['Landingpage-ID']
-                    if landingpage_id and landingpage_id != '' and landingpage_id != 'nan':
-                        # Nur hinzufügen wenn nicht bereits in Standard-Spalte vorhanden
-                        if landingpage_id not in result_df['Site-ID-Duda'].values:
-                            landingpage_rows.append({
-                                'Site-ID-Duda': landingpage_id,
-                                'Workflow-Status': row['Workflow-Status'],
-                                'Domain': row['Domain'],
-                                'Projektname': f"{row['Projektname']} (Landingpage)",
-                                'Landingpage-ID': landingpage_id
-                            })
-                            st.write(f"  ➕ Landingpage-ID hinzugefügt: {landingpage_id}")
+                # Zeige ein paar Beispielwerte aus der Landingpage-Spalte
+                sample_landingpage_values = df[landingpage_id_column].dropna().head(10).tolist()
+                st.write(f"📝 Beispielwerte aus {landingpage_id_column}: {sample_landingpage_values}")
+                
+                for idx, row in df.iterrows():  # WICHTIG: df verwenden, nicht result_df!
+                    landingpage_id = row[landingpage_id_column]
+                    if pd.notna(landingpage_id) and str(landingpage_id).strip() not in ['', 'nan']:
+                        landingpage_id_clean = str(landingpage_id).strip()
+                        
+                        # Prüfe ob bereits in Standard-Spalte vorhanden
+                        standard_ids = df[site_id_column].dropna().astype(str).str.strip().tolist()
+                        
+                        if landingpage_id_clean not in standard_ids:
+                            # Neue Landingpage-Zeile erstellen
+                            new_row = {
+                                'Site-ID-Duda': landingpage_id_clean,
+                                'Workflow-Status': str(row[status_column]).strip(),
+                                'Domain': str(row[domain_column]).strip() if domain_column else '',
+                                'Projektname': f"{str(row[project_column]).strip()} (Landingpage)" if project_column else 'Landingpage',
+                                'Landingpage-ID': landingpage_id_clean
+                            }
+                            landingpage_rows.append(new_row)
+                            
+                            # Debug für unsere speziellen IDs
+                            if landingpage_id_clean in ['38f60219', 'aeda899f']:
+                                st.success(f"🎯 LANDINGPAGE-ID GEFUNDEN: {landingpage_id_clean}")
+                                st.write(f"  Workflow-Status: {new_row['Workflow-Status']}")
+                                st.write(f"  Projektname: {new_row['Projektname']}")
+                        else:
+                            st.write(f"  ⚠️ {landingpage_id_clean} bereits in Standard-IDs vorhanden")
                 
                 # Landingpage-Zeilen hinzufügen
                 if landingpage_rows:
-                    st.success(f"✅ {len(landingpage_rows)} Landingpage-Einträge hinzugefügt")
+                    st.success(f"✅ {len(landingpage_rows)} Landingpage-Einträge werden hinzugefügt")
                     landingpage_df = pd.DataFrame(landingpage_rows)
                     result_df = pd.concat([result_df, landingpage_df], ignore_index=True)
+                    
+                    # Debug: Zeige finale Anzahl
+                    final_count = len(result_df)
+                    st.write(f"📊 Finale CRM-DataFrame Größe: {final_count} Zeilen")
+                    
+                    # Prüfe ob unsere IDs jetzt drin sind
+                    target_ids = ['38f60219', 'aeda899f']
+                    for target_id in target_ids:
+                        if target_id in result_df['Site-ID-Duda'].values:
+                            st.success(f"✅ {target_id} ist jetzt im finalen CRM-DataFrame!")
+                        else:
+                            st.error(f"❌ {target_id} ist NICHT im finalen CRM-DataFrame!")
                 else:
                     st.warning("⚠️ Keine neuen Landingpage-IDs zum Hinzufügen gefunden")
             else:
@@ -552,12 +581,12 @@ def main():
             - CCB: Cookiebot Pro monthly
             - Apps: AudioEye, Paperform, etc.
             
-            **App Version: v13** 🔄 - Detailliertes Spalten-Debug
+            **App Version: v14** 🔄 - Landingpage-Verarbeitung gefixt
             """)
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v13*", help="Detailliertes Spalten-Debug")
+        st.sidebar.markdown("*App Version: v14*", help="Landingpage-Verarbeitung gefixt")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
