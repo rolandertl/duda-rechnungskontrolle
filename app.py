@@ -112,6 +112,80 @@ class DudaAPIVerifier:
         }
         
         return error_explanations.get(status_code, f"HTTP {status_code} - Unbekannter Fehler")
+    
+    def get_site_status(self, site_id):
+        """Holt den aktuellen Status einer Site von der Duda API"""
+        if not self.api_available:
+            return None
+            
+        try:
+            # Duda API Endpoint für Site Details
+            url = f"{self.api_endpoint}/api/sites/multiscreen/{site_id}"
+            
+            # Basic Auth Header
+            auth_string = f"{self.api_username}:{self.api_password}"
+            auth_bytes = auth_string.encode('ascii')
+            auth_header = base64.b64encode(auth_bytes).decode('ascii')
+            
+            headers = {
+                'Authorization': f'Basic {auth_header}',
+                'Content-Type': 'application/json',
+                'User-Agent': 'Duda-Billing-Control/1.0'
+            }
+            
+            # API Call
+            response = requests.get(url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Zusätzlich Publishing-Historie abrufen
+                publish_history = self.get_publish_history(site_id)
+                
+                return {
+                    'is_published': data.get('published', False),
+                    'last_published': data.get('last_published'),
+                    'unpublication_date': data.get('unpublication_date'),
+                    'site_status': data.get('site_status', 'unknown'),
+                    'publish_history': publish_history,
+                    'site_domain': data.get('site_domain', ''),
+                    'fqdn': data.get('fqdn', ''),
+                    'preview_url': data.get('preview_url', ''),
+                    'api_response_code': response.status_code
+                }
+            elif response.status_code == 404:
+                return {
+                    'error': 'Site nicht gefunden',
+                    'api_response_code': 404,
+                    'is_published': False
+                }
+            elif response.status_code == 403:
+                return {
+                    'error': 'Zugriff verweigert - keine Berechtigung für diese Site',
+                    'api_response_code': 403,
+                    'is_published': False,
+                    'details': 'Site gehört möglicherweise einem anderen Account'
+                }
+            elif response.status_code == 400:
+                return {
+                    'error': 'Site existiert nicht',
+                    'api_response_code': 400,
+                    'is_published': False,
+                    'details': 'Site-ID ist ungültig oder Site wurde gelöscht'
+                }
+            else:
+                return {
+                    'error': f'API Error: {response.status_code}',
+                    'api_response_code': response.status_code,
+                    'is_published': False,
+                    'details': self._interpret_error_code(response.status_code),
+                    'response_text': response.text[:200]
+                }
+                
+        except requests.exceptions.Timeout:
+            return {'error': 'Timeout', 'api_response_code': 408}
+        except Exception as e:
+            return {'error': str(e), 'api_response_code': 500}
         """Holt den aktuellen Status einer Site von der Duda API"""
         if not self.api_available:
             return None
