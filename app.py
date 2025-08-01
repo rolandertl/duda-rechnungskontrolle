@@ -390,6 +390,19 @@ class DataAnalyzer:
         for _, duda_row in self.duda_df.iterrows():
             site_alias = str(duda_row['Site Alias']).strip()
             unpublication_date = duda_row.get('Unpublication Date', None)
+            product_type = duda_row['Produkttyp']
+            
+            # Für CCB/Apps: Unpublication Date von zugehöriger Lizenz-Site übernehmen falls leer
+            if product_type in ['CCB', 'Apps'] and (pd.isna(unpublication_date) or str(unpublication_date).strip() in ['', 'nan']):
+                # Suche nach Lizenz-Site mit derselben ID
+                license_match = self.duda_df[
+                    (self.duda_df['Site Alias'] == site_alias) & 
+                    (self.duda_df['Produkttyp'] == 'Lizenz')
+                ]
+                if not license_match.empty:
+                    license_unpublish = license_match.iloc[0].get('Unpublication Date', None)
+                    if not pd.isna(license_unpublish) and str(license_unpublish).strip() not in ['', 'nan']:
+                        unpublication_date = license_unpublish
             
             # CRM-Eintrag suchen - direkte Suche in der kombinierten Site-ID-Duda Spalte
             crm_match = self.crm_df[self.crm_df['Site-ID-Duda'] == site_alias]
@@ -399,7 +412,7 @@ class DataAnalyzer:
                 issues.append({
                     'Site_Alias': site_alias,
                     'Site_URL': duda_row.get('Site URL', ''),
-                    'Produkttyp': duda_row['Produkttyp'],
+                    'Produkttyp': product_type,
                     'Charge_Frequency': duda_row['Charge Frequency'],
                     'CRM_Status': 'Nicht gefunden',
                     'Projektname': 'Nicht gefunden',
@@ -414,7 +427,7 @@ class DataAnalyzer:
                 
                 if not self.is_status_ok(workflow_status, unpublication_date):
                     # Für Apps: Prüfen ob es eine zugehörige "Website online" Site gibt
-                    if duda_row['Produkttyp'] in ['CCB', 'Apps']:
+                    if product_type in ['CCB', 'Apps']:
                         # Prüfen ob es eine Lizenz-Site mit gleichem Alias und OK-Status gibt
                         license_match = self.duda_df[
                             (self.duda_df['Site Alias'] == site_alias) & 
@@ -422,7 +435,7 @@ class DataAnalyzer:
                         ]
                         
                         if not license_match.empty:
-                            # Es gibt eine Lizenz-Site, prüfe deren Status auch mit unpublication_date
+                            # Verwende das Unpublication Date der Lizenz für die Bewertung
                             license_unpublish = license_match.iloc[0].get('Unpublication Date', None)
                             if self.is_status_ok(workflow_status, license_unpublish):
                                 continue
@@ -431,11 +444,11 @@ class DataAnalyzer:
                         issues.append({
                             'Site_Alias': site_alias,
                             'Site_URL': duda_row.get('Site URL', ''),
-                            'Produkttyp': duda_row['Produkttyp'],
+                            'Produkttyp': product_type,
                             'Charge_Frequency': duda_row['Charge Frequency'],
                             'CRM_Status': workflow_status,
                             'Projektname': crm_row['Projektname'],
-                            'Problem_Typ': f'{duda_row["Produkttyp"]} ohne Website online',
+                            'Problem_Typ': f'{product_type} ohne Website online',
                             'Unpublish_Tage': self.days_since_unpublication(unpublication_date) if unpublication_date else None
                         })
                     
@@ -446,7 +459,7 @@ class DataAnalyzer:
                         issues.append({
                             'Site_Alias': site_alias,
                             'Site_URL': duda_row.get('Site URL', ''),
-                            'Produkttyp': duda_row['Produkttyp'],
+                            'Produkttyp': product_type,
                             'Charge_Frequency': duda_row['Charge Frequency'],
                             'CRM_Status': workflow_status,
                             'Projektname': crm_row['Projektname'],
@@ -575,12 +588,12 @@ def main():
             **Kalendermonat-Regel:**
             Sites die im aktuellen Abrechnungsmonat offline gingen, werden noch voll verrechnet.
             
-            **App Version: v16** 🔄 - Unpublication Date Logik hinzugefügt
+            **App Version: v17** 🔄 - CCB Unpublication Date Fix
             """)
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v16*", help="Unpublication Date Berücksichtigung")
+        st.sidebar.markdown("*App Version: v17*", help="CCB Unpublication Date von Lizenz übernehmen")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
@@ -801,6 +814,9 @@ def display_results(issues, summary, duda_df, crm_df):
             - CRM Status: "gekündigt, Website offline"  
             - Heute: 20. Juni (5 Tage später)
             - **Ergebnis: ✅ OK** (weil ≤31 Tage, noch im Abrechnungsmonat)
+            
+            **CCB/Apps Spezialbehandlung:**
+            CCB und Apps haben oft kein eigenes Unpublication Date, verwenden daher das Datum der zugehörigen Lizenz-Site.
             
             **Ohne Unpublication Date:** Nur "Website online" Status gilt als OK.
             """)
