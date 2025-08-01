@@ -71,8 +71,8 @@ class FileProcessor:
             
             repaired = False
             
-            # Strategie 1: Für CCB/Apps - suche nach URL bei anderen Einträgen mit derselben wissenschaftlichen Notation
-            if product_type in ['CCB', 'Apps'] and (not site_url or site_url == 'nan'):
+            # Strategie 1: Für Apps - suche nach URL bei anderen Einträgen mit derselben wissenschaftlichen Notation
+            if self.is_app_product(product_type) and (not site_url or site_url == 'nan'):
                 # Finde andere Einträge mit derselben wissenschaftlichen Notation aber mit URL
                 same_scientific_id = duda_df[
                     (duda_df['Site Alias'] == site_alias_scientific) & 
@@ -621,7 +621,7 @@ def main():
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v17*", help="CCB Unpublication Date von Lizenz übernehmen")
+        st.sidebar.markdown("*App Version: v19*", help="Alle Apps werden jetzt einheitlich behandelt")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
@@ -833,18 +833,27 @@ def display_results(issues, summary, duda_df, crm_df):
                 st.text("Keine Landingpage-Spalte gefunden")
                 
         # Zeige Information über Unpublication Date Feature
-        with st.expander("📅 Kalendermonat-Regel"):
+        with st.expander("📅 Kalendermonat-Regel & App-Abhängigkeiten"):
             st.markdown("""
-            **Neue Logik:** Sites mit Status 'offline' oder 'gekündigt' sind OK, wenn sie vor ≤31 Tagen unpublished wurden.
+            **Kalendermonat-Regel:**
+            Sites mit Status 'offline' oder 'gekündigt' sind OK, wenn sie vor ≤31 Tagen unpublished wurden.
             
-            **Beispiel:**
+            **Beispiel - Lizenz-Site:**
             - Site unpublished am 15. Juni
             - CRM Status: "gekündigt, Website offline"  
             - Heute: 20. Juni (5 Tage später)
             - **Ergebnis: ✅ OK** (weil ≤31 Tage, noch im Abrechnungsmonat)
             
-            **CCB/Apps Spezialbehandlung:**
-            CCB und Apps haben oft kein eigenes Unpublication Date, verwenden daher das Datum der zugehörigen Lizenz-Site.
+            **App-Abhängigkeiten:**
+            Alle Apps sind abhängig von ihrer Lizenz-Site:
+            - **CCB**, **AudioEye**, **Paperform**, **RSS/Social**, etc.
+            - Apps übernehmen automatisch das Unpublication Date der Lizenz
+            - Apps sind nur problematisch wenn die Lizenz nicht "Website online" ist
+            
+            **Beispiel - App-Logik:**
+            - Lizenz-Site: Status "gekündigt", unpublished vor 10 Tagen → ✅ OK
+            - CCB gleiche ID: Übernimmt Status und Datum → ✅ OK  
+            - AudioEye gleiche ID: Übernimmt Status und Datum → ✅ OK
             
             **Ohne Unpublication Date:** Nur "Website online" Status gilt als OK.
             """)
