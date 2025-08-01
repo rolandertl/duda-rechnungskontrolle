@@ -588,7 +588,7 @@ def main():
             **Kalendermonat-Regel:**
             Sites die im aktuellen Abrechnungsmonat offline gingen, werden noch voll verrechnet.
             
-            **App Version: v17** 🔄 - CCB Unpublication Date Fix
+            **App Version: v18** 🎉 - Vollständige Unpublication Date Integration
             """)
         
         # Version Info auch als kleine Badge
