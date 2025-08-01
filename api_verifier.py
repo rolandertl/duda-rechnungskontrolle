@@ -31,8 +31,8 @@ class DudaAPIVerifier:
             # Debug-Modus aus Secrets laden (optional)
             self.debug_mode = st.secrets["duda"].get("debug_mode", False)
     
-    def test_api_connection(self):
-        """Testet die API-Verbindung mit einem einfachen Call"""
+    def test_api_connection(self, test_site_id="63609f38"):
+        """Testet die API-Verbindung mit einem Site-spezifischen Call"""
         if not self.api_available:
             return {
                 'success': False,
@@ -41,8 +41,8 @@ class DudaAPIVerifier:
             }
         
         try:
-            # Test mit Account-Info Call (weniger restriktiv als Site-spezifische Calls)
-            url = f"{self.api_endpoint}/api/accounts/account"
+            # Test mit bekannter Site-ID (funktioniert bei Enterprise Accounts)
+            url = f"{self.api_endpoint}/api/sites/multiscreen/{test_site_id}"
             
             # Basic Auth Header
             auth_string = f"{self.api_username}:{self.api_password}"
@@ -59,14 +59,13 @@ class DudaAPIVerifier:
                 st.write("🔍 **Debug - API Test:**")
                 st.write(f"URL: {url}")
                 st.write(f"Credentials: {format_api_credentials_debug(self.api_username)}")
-                st.write(f"Headers: {headers}")
+                st.write(f"Test Site ID: {test_site_id}")
             
             # API Call mit kurzem Timeout
             response = requests.get(url, headers=headers, timeout=10)
             
             if self.debug_mode:
                 st.write(f"Response Status: {response.status_code}")
-                st.write(f"Response Headers: {dict(response.headers)}")
                 if response.status_code != 200:
                     st.write(f"Response Body: {response.text[:500]}")
             
@@ -74,9 +73,17 @@ class DudaAPIVerifier:
                 data = response.json()
                 return {
                     'success': True,
-                    'account_name': data.get('account_name', 'Unknown'),
-                    'account_type': data.get('account_type', 'Unknown'),
+                    'test_site_id': test_site_id,
+                    'site_published': data.get('published', False),
+                    'site_domain': data.get('site_domain', 'Unknown'),
                     'status_code': response.status_code
+                }
+            elif response.status_code == 404:
+                return {
+                    'success': False,
+                    'error': f'Test-Site {test_site_id} nicht gefunden',
+                    'status_code': response.status_code,
+                    'details': 'Site existiert nicht oder gehört nicht zu diesem Account'
                 }
             else:
                 return {
