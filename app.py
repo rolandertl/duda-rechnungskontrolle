@@ -365,7 +365,7 @@ class DataAnalyzer:
             self.processor.categorize_charge_frequency
         )
     
-    def is_status_ok(self, status, unpublication_date=None)::
+    def is_status_ok(self, status, unpublication_date=None):
         """Prüft ob ein Workflow-Status als OK gilt"""
         if pd.isna(status):
             return False
