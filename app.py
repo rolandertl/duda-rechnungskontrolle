@@ -11,6 +11,14 @@ class FileProcessor:
     def __init__(self):
         pass
     
+    def is_app_product(self, product_type):
+        """Prüft ob ein Produkttyp eine App/Zusatzservice ist (abhängig von Lizenz)"""
+        app_types = [
+            'CCB', 'AudioEye', 'Paperform', 'RSS/Social', 
+            'SiteSearch', 'BookingTool', 'IVR', 'Apps'
+        ]
+        return product_type in app_types
+    
     def detect_encoding(self, file_content):
         """Erkennt das Encoding einer Datei"""
         result = chardet.detect(file_content)
@@ -344,15 +352,20 @@ class DataAnalyzer:
             self.processor.categorize_charge_frequency
         )
     
-    def is_app_product(self, product_type):
-        """Prüft ob ein Produkttyp eine App/Zusatzservice ist (abhängig von Lizenz)"""
-        app_types = [
-            'CCB', 'AudioEye', 'Paperform', 'RSS/Social', 
-            'SiteSearch', 'BookingTool', 'IVR', 'Apps'
-        ]
-        return product_type in app_types
+    def __init__(self, duda_df, crm_df):
+        self.duda_df = duda_df.copy()
+        self.crm_df = crm_df.copy()
+        self.processor = FileProcessor()
+        
+        # WICHTIG: Problematische Site IDs über Domain-Abgleich reparieren
+        self.duda_df = self.processor.fix_scientific_notation_ids(self.duda_df, self.crm_df)
+        
+        # Produkttypen hinzufügen
+        self.duda_df['Produkttyp'] = self.duda_df['Charge Frequency'].apply(
+            self.processor.categorize_charge_frequency
+        )
     
-    def is_status_ok(self, status, unpublication_date=None):
+    def is_status_ok(self, status, unpublication_date=None)::
         """Prüft ob ein Workflow-Status als OK gilt"""
         if pd.isna(status):
             return False
@@ -420,7 +433,7 @@ class DataAnalyzer:
             product_type = duda_row['Produkttyp']
             
             # Für Apps: Unpublication Date von zugehöriger Lizenz-Site übernehmen falls leer
-            if self.is_app_product(product_type) and (pd.isna(unpublication_date) or str(unpublication_date).strip() in ['', 'nan']):
+            if self.processor.is_app_product(product_type) and (pd.isna(unpublication_date) or str(unpublication_date).strip() in ['', 'nan']):
                 # Suche nach Lizenz-Site mit derselben ID
                 license_match = self.duda_df[
                     (self.duda_df['Site Alias'] == site_alias) & 
@@ -454,7 +467,7 @@ class DataAnalyzer:
                 
                 if not self.is_status_ok(workflow_status, unpublication_date):
                     # Für Apps: Prüfen ob es eine zugehörige Lizenz-Site mit OK-Status gibt
-                    if self.is_app_product(product_type):
+                    if self.processor.is_app_product(product_type):
                         # Prüfen ob es eine Lizenz-Site mit gleichem Alias und OK-Status gibt
                         license_match = self.duda_df[
                             (self.duda_df['Site Alias'] == site_alias) & 
@@ -621,7 +634,7 @@ def main():
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v19*", help="Alle Apps werden jetzt einheitlich behandelt")
+        st.sidebar.markdown("*App Version: v20*", help="Bugfix: App-Klassifizierung funktioniert jetzt korrekt")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
