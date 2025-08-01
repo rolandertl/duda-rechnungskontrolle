@@ -6,20 +6,23 @@ from urllib.parse import urlparse
 from datetime import datetime, timedelta
 import requests
 import base64
+import time
 
 class DudaAPIVerifier:
     """Klasse für die Duda API Integration zur finalen Verifikation"""
     
     def __init__(self):
         self.api_available = False
-        self.api_key = None
         self.api_username = None
+        self.api_password = None
+        self.api_endpoint = None
         
         # Prüfe ob API Credentials verfügbar sind
         if "duda" in st.secrets:
-            self.api_key = st.secrets["duda"].get("api_key")
-            self.api_username = st.secrets["duda"].get("api_username", "")
-            self.api_available = bool(self.api_key)
+            self.api_username = st.secrets["duda"].get("api_username")
+            self.api_password = st.secrets["duda"].get("api_password")
+            self.api_endpoint = st.secrets["duda"].get("api_endpoint", "https://api.duda.co")
+            self.api_available = bool(self.api_username and self.api_password)
     
     def get_site_status(self, site_id):
         """Holt den aktuellen Status einer Site von der Duda API"""
@@ -27,11 +30,11 @@ class DudaAPIVerifier:
             return None
             
         try:
-            # Duda API Endpoint
-            url = f"https://api.duda.co/api/sites/multiscreen/{site_id}"
+            # Duda API Endpoint für Site Details
+            url = f"{self.api_endpoint}/api/sites/multiscreen/{site_id}"
             
             # Basic Auth Header
-            auth_string = f"{self.api_username}:{self.api_key}"
+            auth_string = f"{self.api_username}:{self.api_password}"
             auth_bytes = auth_string.encode('ascii')
             auth_header = base64.b64encode(auth_bytes).decode('ascii')
             
@@ -41,87 +44,249 @@ class DudaAPIVerifier:
             }
             
             # API Call
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=15)
             
             if response.status_code == 200:
                 data = response.json()
+                
+                # Zusätzlich Publishing-Historie abrufen
+                publish_history = self.get_publish_history(site_id)
+                
                 return {
                     'is_published': data.get('published', False),
                     'last_published': data.get('last_published'),
                     'unpublication_date': data.get('unpublication_date'),
-                    'site_status': data.get('site_status', 'unknown')
+                    'site_status': data.get('site_status', 'unknown'),
+                    'publish_history': publish_history,
+                    'site_domain': data.get('site_domain', ''),
+                    'fqdn': data.get('fqdn', ''),
+                    'preview_url': data.get('preview_url', ''),
+                    'api_response_code': response.status_code
                 }
+            elif response.status_code == 404:
+                return {
+                    'error': 'Site nicht gefunden',
+                    'api_response_code': 404,
+                    'is_published': False
+                }
+            else:
+                return {
+                    'error': f'API Error: {response.status_code}',
+                    'api_response_code': response.status_code,
+                    'is_published': False
+                }
+                
+        except requests.exceptions.Timeout:
+            st.warning(f"⏱️ API Timeout für Site {site_id}")
+            return {'error': 'Timeout', 'api_response_code': 408}
+        except Exception as e:
+            st.warning(f"❌ API Fehler für Site {site_id}: {str(e)}")
+            return {'error': str(e), 'api_response_code': 500}
+    
+    def get_publish_history(self, site_id):
+        """Holt die Publishing-Historie einer Site"""
+        if not self.api_available:
+            return None
+            
+        try:
+            # API Endpoint für Site Activities (Publishing-Historie)
+            url = f"{self.api_endpoint}/api/sites/multiscreen/{site_id}/activities"
+            
+            auth_string = f"{self.api_username}:{self.api_password}"
+            auth_bytes = auth_string.encode('ascii')
+            auth_header = base64.b64encode(auth_bytes).decode('ascii')
+            
+            headers = {
+                'Authorization': f'Basic {auth_header}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Nur die letzten 50 Aktivitäten abrufen
+            params = {
+                'limit': 50,
+                'offset': 0
+            }
+            
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                activities = response.json()
+                
+                # Nach Publish/Unpublish Aktivitäten filtern
+                publish_activities = []
+                for activity in activities:
+                    activity_type = activity.get('activity_type', '').lower()
+                    if any(term in activity_type for term in ['publish', 'unpublish']):
+                        publish_activities.append({
+                            'type': activity_type,
+                            'date': activity.get('date'),
+                            'user': activity.get('user', 'System'),
+                            'description': activity.get('description', '')
+                        })
+                
+                return publish_activities[:10]  # Nur die letzten 10 Publish-Aktivitäten
             else:
                 return None
                 
-        except Exception as e:
-            st.warning(f"API Fehler für Site {site_id}: {str(e)}")
+        except Exception:
             return None
+    
+    def analyze_api_result(self, site_id, api_result, original_issue):
+        """Analysiert das API-Ergebnis und klassifiziert als OK oder Problem"""
+        if api_result is None or 'error' in api_result:
+            return {
+                'classification': 'api_error',
+                'reason': api_result.get('error', 'Unbekannter API-Fehler') if api_result else 'API nicht verfügbar',
+                'recommendation': 'Manuelle Kontrolle erforderlich'
+            }
+        
+        is_published = api_result.get('is_published', False)
+        
+        # Fall 1: Site ist online → False Positive
+        if is_published:
+            return {
+                'classification': 'false_positive',
+                'reason': 'Site ist tatsächlich online und erreichbar',
+                'recommendation': 'Verrechnung berechtigt - CRM Status prüfen und aktualisieren'
+            }
+        
+        # Fall 2: Site ist offline → weitere Analyse
+        unpublish_date = api_result.get('unpublication_date')
+        publish_history = api_result.get('publish_history', [])
+        
+        # Prüfe wann die Site zuletzt unpublished wurde
+        days_offline = None
+        if unpublish_date:
+            try:
+                # Verschiedene Datumsformate versuchen
+                unpub_dt = None
+                for fmt in ['%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%d']:
+                    try:
+                        unpub_dt = datetime.strptime(unpublish_date.replace('Z', ''), fmt.replace('Z', ''))
+                        break
+                    except ValueError:
+                        continue
+                
+                if unpub_dt:
+                    days_offline = (datetime.now() - unpub_dt).days
+            except Exception:
+                pass
+        
+        # Wenn kein Unpublish-Datum in API, versuche es aus der History zu extrahieren
+        if days_offline is None and publish_history:
+            for activity in publish_history:
+                if 'unpublish' in activity.get('type', '').lower():
+                    try:
+                        activity_date = activity.get('date')
+                        if activity_date:
+                            # Datum parsen
+                            unpub_dt = None
+                            for fmt in ['%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ']:
+                                try:
+                                    unpub_dt = datetime.strptime(activity_date.replace('Z', ''), fmt.replace('Z', ''))
+                                    break
+                                except ValueError:
+                                    continue
+                            
+                            if unpub_dt:
+                                days_offline = (datetime.now() - unpub_dt).days
+                                break
+                    except Exception:
+                        continue
+        
+        # Kalendermonat-Regel anwenden (≤31 Tage)
+        if days_offline is not None and days_offline <= 31:
+            return {
+                'classification': 'false_positive',
+                'reason': f'Site offline seit {days_offline} Tagen (≤31 Tage = Kalendermonat-Regel)',
+                'recommendation': 'Verrechnung berechtigt - im aktuellen Abrechnungsmonat offline gegangen'
+            }
+        
+        # Fall 3: Echtes Problem - Site ist länger offline oder unbekanntes Offline-Datum
+        offline_info = f"seit {days_offline} Tagen" if days_offline is not None else "Offline-Datum unbekannt"
+        
+        return {
+            'classification': 'confirmed_issue',
+            'reason': f'Site ist offline {offline_info}',
+            'recommendation': 'Manuelle Kontrolle - möglicherweise nicht berechtigt verrechnet'
+        }
     
     def verify_issues(self, issues_df):
         """Finale Verifikation der problematischen Sites über Duda API"""
         if not self.api_available or issues_df.empty:
-            return issues_df, []
+            return issues_df, [], []
         
         verified_issues = []
         false_positives = []
+        api_errors = []
         api_calls_made = 0
         
         st.info(f"🔍 Finale Verifikation von {len(issues_df)} problematischen Sites über Duda API...")
         
         # Progress Bar
         progress_bar = st.progress(0)
+        status_text = st.empty()
         
         for idx, (_, issue) in enumerate(issues_df.iterrows()):
             site_id = issue['Site_Alias']
             
             # Progress Update
-            progress_bar.progress((idx + 1) / len(issues_df))
+            progress = (idx + 1) / len(issues_df)
+            progress_bar.progress(progress)
+            status_text.text(f"Prüfe Site {idx + 1}/{len(issues_df)}: {site_id}")
             
             # API Call
-            api_status = self.get_site_status(site_id)
+            api_result = self.get_site_status(site_id)
             api_calls_made += 1
             
-            if api_status is None:
-                # API Call fehlgeschlagen → Issue beibehalten
-                verified_issues.append(issue)
-                continue
+            # Ergebnis analysieren
+            analysis = self.analyze_api_result(site_id, api_result, issue)
             
-            # Prüfe echten Status
-            if api_status['is_published']:
-                # Site ist tatsächlich online → False Positive!
-                false_positives.append({
-                    'site_id': site_id,
-                    'reason': 'Site ist tatsächlich online',
-                    'api_status': 'published'
-                })
-                continue
+            # Angereicherte Issue-Daten erstellen
+            enriched_issue = issue.copy()
+            if api_result and 'error' not in api_result:
+                enriched_issue['API_Published'] = api_result.get('is_published', False)
+                enriched_issue['API_Last_Published'] = api_result.get('last_published', '')
+                enriched_issue['API_Unpublish_Date'] = api_result.get('unpublication_date', '')
+                enriched_issue['API_Site_Domain'] = api_result.get('site_domain', '')
+            else:
+                enriched_issue['API_Published'] = 'ERROR'
+                enriched_issue['API_Last_Published'] = ''
+                enriched_issue['API_Unpublish_Date'] = ''
+                enriched_issue['API_Site_Domain'] = ''
             
-            # Site ist offline, prüfe wie lange
-            if api_status['unpublication_date']:
-                try:
-                    unpub_date = datetime.fromisoformat(api_status['unpublication_date'].replace('Z', '+00:00'))
-                    days_offline = (datetime.now() - unpub_date.replace(tzinfo=None)).days
-                    
-                    if days_offline <= 31:
-                        # Kürzlich offline → False Positive!
-                        false_positives.append({
-                            'site_id': site_id,
-                            'reason': f'Kürzlich offline ({days_offline} Tage)',
-                            'api_status': 'recently_unpublished'
-                        })
-                        continue
-                except:
-                    pass  # Datum konnte nicht geparst werden
+            enriched_issue['API_Analysis'] = analysis['reason']
+            enriched_issue['API_Recommendation'] = analysis['recommendation']
             
-            # Wirklich problematisch → behalten
-            verified_issues.append(issue)
+            # Klassifikation
+            if analysis['classification'] == 'false_positive':
+                false_positives.append(enriched_issue)
+            elif analysis['classification'] == 'api_error':
+                api_errors.append(enriched_issue)
+                verified_issues.append(enriched_issue)  # Bei API-Fehlern: Issue beibehalten
+            else:  # confirmed_issue
+                verified_issues.append(enriched_issue)
+            
+            # Kleine Pause um API nicht zu überlasten
+            if idx < len(issues_df) - 1:  # Nicht bei letztem Aufruf
+                time.sleep(0.1)
         
         progress_bar.empty()
+        status_text.empty()
         
-        st.success(f"✅ API Verifikation abgeschlossen: {api_calls_made} API Calls, {len(false_positives)} False Positives eliminiert")
+        # Zusammenfassung
+        st.success(f"✅ API Verifikation abgeschlossen:")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("API Calls", api_calls_made)
+        with col2:
+            st.metric("False Positives", len(false_positives))
+        with col3:
+            st.metric("Echte Probleme", len(verified_issues) - len(api_errors))
+        with col4:
+            st.metric("API Fehler", len(api_errors))
         
-        return pd.DataFrame(verified_issues), false_positives
+        return pd.DataFrame(verified_issues), false_positives, api_errors
 
 
 class FileProcessor:
@@ -471,19 +636,6 @@ class DataAnalyzer:
             self.processor.categorize_charge_frequency
         )
     
-    def __init__(self, duda_df, crm_df):
-        self.duda_df = duda_df.copy()
-        self.crm_df = crm_df.copy()
-        self.processor = FileProcessor()
-        
-        # WICHTIG: Problematische Site IDs über Domain-Abgleich reparieren
-        self.duda_df = self.processor.fix_scientific_notation_ids(self.duda_df, self.crm_df)
-        
-        # Produkttypen hinzufügen
-        self.duda_df['Produkttyp'] = self.duda_df['Charge Frequency'].apply(
-            self.processor.categorize_charge_frequency
-        )
-    
     def is_status_ok(self, status, unpublication_date=None):
         """Prüft ob ein Workflow-Status als OK gilt"""
         if pd.isna(status):
@@ -663,7 +815,7 @@ class ReportGenerator:
     def __init__(self):
         pass
     
-    def generate_csv_report(self, issues_df, summary):
+    def generate_csv_report(self, issues_df, summary, api_results=None):
         """Generiert einen CSV-Bericht der Kontrollergebnisse"""
         output = StringIO()
         
@@ -675,6 +827,13 @@ class ReportGenerator:
         output.write(f"# - Gesamt verrechnet: {summary['total_charged']}\n")
         output.write(f"# - OK (Website online): {summary['ok_count']}\n")
         output.write(f"# - Manuelle Kontrolle: {summary['issues_count']}\n")
+        
+        # API-Ergebnisse falls vorhanden
+        if api_results:
+            output.write(f"# - API Verifikation: {api_results.get('api_calls', 0)} Calls\n")
+            output.write(f"# - False Positives: {api_results.get('false_positives', 0)}\n")
+            output.write(f"# - API Fehler: {api_results.get('api_errors', 0)}\n")
+        
         output.write("#\n")
         
         # Produkttyp-Breakdown
@@ -748,12 +907,15 @@ def main():
             **Kalendermonat-Regel:**
             Sites die im aktuellen Abrechnungsmonat offline gingen, werden noch voll verrechnet.
             
-            **App Version: v18** 🎉 - Vollständige Unpublication Date Integration
+            **API Verifikation:**
+            Finale Kontrolle über echte Duda-Site-Status für eliminierte False Positives.
+            
+            **App Version: v21** 🎉 - Erweiterte API-Verifikation mit Publish-Historie
             """)
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v20*", help="Bugfix: App-Klassifizierung funktioniert jetzt korrekt")
+        st.sidebar.markdown("*App Version: v21*", help="Erweiterte API-Verifikation mit detaillierter Publish-Historie und Offline-Analyse")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
@@ -795,6 +957,7 @@ def main():
             - Abgleich mit CRM-Workflow-Status
             - Identifikation von Unstimmigkeiten
             - Export der Kontrollergebnisse
+            - **NEU:** API-Verifikation für finale Kontrolle
             """)
         
         with col2:
@@ -804,6 +967,7 @@ def main():
             - Liste aller problematischen Einträge
             - Downloadbare Berichte
             - Übersichtliche Darstellung
+            - **NEU:** Echte Publish-Status über Duda API
             """)
 
 
@@ -853,9 +1017,27 @@ def display_results(issues, summary, duda_df, crm_df):
     
     # API Status anzeigen
     if duda_verifier.api_available:
-        st.success("🔑 Duda API verfügbar - Finale Verifikation möglich")
+        st.success("🔑 Duda API verfügbar - Erweiterte Verifikation mit Publish-Historie möglich")
+        st.info("💡 Die API-Verifikation prüft den echten Publish-Status jeder Site und wendet automatisch die Kalendermonat-Regel an")
     else:
-        st.info("ℹ️ Duda API nicht konfiguriert - Manuelle Kontrolle aller Probleme erforderlich")
+        st.warning("⚠️ Duda API nicht konfiguriert - Manuelle Kontrolle aller Probleme erforderlich")
+        with st.expander("🔧 API Konfiguration"):
+            st.markdown("""
+            Füge folgende Secrets in Streamlit hinzu um die API-Verifikation zu aktivieren:
+            
+            ```toml
+            [duda]
+            api_username = "DEIN_API_USERNAME"
+            api_password = "DEIN_API_PASSWORT"  
+            api_endpoint = "https://api.duda.co"
+            ```
+            
+            Die API-Verifikation prüft:
+            - ✅ Aktuellen Publish-Status
+            - 📅 Letztes Publish/Unpublish-Datum
+            - 📊 Publishing-Historie
+            - 🔍 Automatische Kalendermonat-Regel
+            """)
     
     # Produkttyp-Breakdown
     if summary['product_breakdown']:
@@ -883,14 +1065,59 @@ def display_results(issues, summary, duda_df, crm_df):
         
         # API Verifikation Button
         if duda_verifier.api_available:
-            if st.button("🔍 Finale Verifikation mit Duda API", type="primary"):
-                verified_issues, false_positives = duda_verifier.verify_issues(issues)
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.info(f"📋 {len(issues)} problematische Einträge gefunden - API-Verifikation empfohlen")
+            with col2:
+                verify_button = st.button("🔍 API-Verifikation starten", type="primary", use_container_width=True)
+            
+            if verify_button:
+                verified_issues, false_positives, api_errors = duda_verifier.verify_issues(issues)
+                
+                # API-Ergebnisse in Session State speichern für weitere Verwendung
+                st.session_state['verified_issues'] = verified_issues
+                st.session_state['false_positives'] = false_positives
+                st.session_state['api_errors'] = api_errors
+                st.session_state['api_verification_done'] = True
                 
                 # False Positives anzeigen
                 if false_positives:
                     st.subheader("✅ Eliminierte False Positives")
+                    st.success(f"🎉 {len(false_positives)} False Positives durch API-Verifikation eliminiert!")
+                    
                     fp_df = pd.DataFrame(false_positives)
-                    st.dataframe(fp_df, use_container_width=True)
+                    
+                    # False Positives Tabelle mit zusätzlichen API-Infos
+                    display_columns = ['Site_Alias', 'Produkttyp', 'CRM_Status', 'API_Analysis', 'API_Recommendation']
+                    available_columns = [col for col in display_columns if col in fp_df.columns]
+                    
+                    st.dataframe(
+                        fp_df[available_columns],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            'Site_Alias': 'Site ID',
+                            'Produkttyp': 'Produkt',
+                            'CRM_Status': 'CRM Status',
+                            'API_Analysis': 'API Analyse',
+                            'API_Recommendation': 'Empfehlung'
+                        }
+                    )
+                
+                # API-Fehler anzeigen
+                if api_errors:
+                    st.subheader("❌ API-Fehler")
+                    st.warning(f"⚠️ {len(api_errors)} Sites konnten nicht über API verifiziert werden")
+                    
+                    error_df = pd.DataFrame(api_errors)
+                    display_columns = ['Site_Alias', 'Produkttyp', 'API_Analysis']
+                    available_columns = [col for col in display_columns if col in error_df.columns]
+                    
+                    st.dataframe(
+                        error_df[available_columns],
+                        use_container_width=True,
+                        hide_index=True
+                    )
                 
                 # Update issues für weitere Anzeige
                 issues = verified_issues
@@ -899,34 +1126,42 @@ def display_results(issues, summary, duda_df, crm_df):
                     st.success("🎉 Alle Probleme durch API-Verifikation als False Positives identifiziert!")
                     return
         
+        # Verwende Session State falls API-Verifikation bereits durchgeführt wurde
+        elif 'api_verification_done' in st.session_state and st.session_state['api_verification_done']:
+            issues = st.session_state.get('verified_issues', issues)
+            false_positives = st.session_state.get('false_positives', [])
+            api_errors = st.session_state.get('api_errors', [])
+            
+            if false_positives:
+                st.success(f"✅ {len(false_positives)} False Positives bereits eliminiert")
+            if api_errors:
+                st.warning(f"⚠️ {len(api_errors)} API-Fehler")
+        
         # Filter für Problemtyp
-        problem_types = issues['Problem_Typ'].unique()
-        selected_type = st.selectbox(
-            "Filter nach Problemtyp:",
-            ['Alle'] + list(problem_types),
-            key="problem_filter"
-        )
-        
-        filtered_issues = issues if selected_type == 'Alle' else issues[issues['Problem_Typ'] == selected_type]
-        
-        # Site ID Links für Duda Dashboard hinzufügen
-        filtered_issues_display = filtered_issues.copy()
-        filtered_issues_display['Duda_Dashboard'] = filtered_issues_display['Site_Alias'].apply(
-            lambda x: f"https://my.duda.co/home/dashboard/overview/{x}" if pd.notna(x) and str(x).strip() else ""
-        )
-        
-        # Unpublish-Tage für bessere Verständlichkeit formatieren
-        if 'Unpublish_Tage' in filtered_issues_display.columns:
-            filtered_issues_display['Offline_seit'] = filtered_issues_display['Unpublish_Tage'].apply(
-                lambda x: f"{x} Tage" if pd.notna(x) and x is not None else "Unbekannt"
+        if not issues.empty:
+            problem_types = issues['Problem_Typ'].unique()
+            selected_type = st.selectbox(
+                "Filter nach Problemtyp:",
+                ['Alle'] + list(problem_types),
+                key="problem_filter"
             )
-        
-        # Anzeige der Probleme
-        st.dataframe(
-            filtered_issues_display,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
+            
+            filtered_issues = issues if selected_type == 'Alle' else issues[issues['Problem_Typ'] == selected_type]
+            
+            # Site ID Links für Duda Dashboard hinzufügen
+            filtered_issues_display = filtered_issues.copy()
+            filtered_issues_display['Duda_Dashboard'] = filtered_issues_display['Site_Alias'].apply(
+                lambda x: f"https://my.duda.co/home/dashboard/overview/{x}" if pd.notna(x) and str(x).strip() else ""
+            )
+            
+            # Unpublish-Tage für bessere Verständlichkeit formatieren
+            if 'Unpublish_Tage' in filtered_issues_display.columns:
+                filtered_issues_display['Offline_seit'] = filtered_issues_display['Unpublish_Tage'].apply(
+                    lambda x: f"{x} Tage" if pd.notna(x) and x is not None else "Unbekannt"
+                )
+            
+            # Spalten für Anzeige auswählen (mit API-Daten falls vorhanden)
+            base_columns = {
                 'Site_Alias': 'Site ID',
                 'Site_URL': st.column_config.LinkColumn('Site URL'),
                 'Duda_Dashboard': st.column_config.LinkColumn(
@@ -937,14 +1172,39 @@ def display_results(issues, summary, duda_df, crm_df):
                 'CRM_Status': 'CRM Status',
                 'Problem_Typ': 'Problem',
                 'Projektname': 'Projekt',
-                'Offline_seit': 'Offline seit',
-                'Unpublish_Tage': None  # Hide raw number column
+                'Offline_seit': 'Offline seit'
             }
-        )
+            
+            # API-spezifische Spalten hinzufügen falls vorhanden
+            if 'API_Published' in filtered_issues_display.columns:
+                base_columns.update({
+                    'API_Published': 'API: Online',
+                    'API_Unpublish_Date': 'API: Offline seit',
+                    'API_Analysis': 'API Analyse',
+                    'API_Recommendation': 'Empfehlung'
+                })
+            
+            # Anzeige der Probleme
+            st.dataframe(
+                filtered_issues_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config=base_columns
+            )
         
         # Download-Button
         report_gen = ReportGenerator()
-        csv_data = report_gen.generate_csv_report(filtered_issues, summary)
+        
+        # API-Ergebnisse für Report zusammenfassen
+        api_results = None
+        if 'api_verification_done' in st.session_state and st.session_state['api_verification_done']:
+            api_results = {
+                'api_calls': len(st.session_state.get('verified_issues', [])) + len(st.session_state.get('false_positives', [])),
+                'false_positives': len(st.session_state.get('false_positives', [])),
+                'api_errors': len(st.session_state.get('api_errors', []))
+            }
+        
+        csv_data = report_gen.generate_csv_report(issues if not issues.empty else pd.DataFrame(), summary, api_results)
         
         st.download_button(
             label="📥 Bericht als CSV herunterladen",
@@ -991,33 +1251,46 @@ def display_results(issues, summary, duda_df, crm_df):
             else:
                 st.text("Keine Landingpage-Spalte gefunden")
                 
-        # Zeige Information über Unpublication Date Feature
-        with st.expander("📅 Kalendermonat-Regel & App-Abhängigkeiten"):
+        # API Debug Info
+        if duda_verifier.api_available:
+            st.subheader("API-Konfiguration")
+            st.text(f"Endpoint: {duda_verifier.api_endpoint}")
+            st.text(f"Username: {duda_verifier.api_username}")
+            st.text("Password: ***")
+        
+        # Zeige Information über erweiterte Features
+        with st.expander("🚀 Erweiterte API-Features (v21)"):
             st.markdown("""
-            **Kalendermonat-Regel:**
-            Sites mit Status 'offline' oder 'gekündigt' sind OK, wenn sie vor ≤31 Tagen unpublished wurden.
+            **API-Verifikation Funktionen:**
             
-            **Beispiel - Lizenz-Site:**
-            - Site unpublished am 15. Juni
-            - CRM Status: "gekündigt, Website offline"  
-            - Heute: 20. Juni (5 Tage später)
-            - **Ergebnis: ✅ OK** (weil ≤31 Tage, noch im Abrechnungsmonat)
+            **1. Site Status Check:**
+            - Echter Publish-Status (online/offline)
+            - Letztes Publish-Datum
+            - Unpublication-Datum
+            - Site-Domain und FQDN
             
-            **App-Abhängigkeiten:**
-            Alle Apps sind abhängig von ihrer Lizenz-Site:
-            - **CCB**, **AudioEye**, **Paperform**, **RSS/Social**, etc.
-            - Apps übernehmen automatisch das Unpublication Date der Lizenz
-            - Apps sind nur problematisch wenn die Lizenz nicht "Website online" ist
+            **2. Publishing-Historie:**
+            - Letzte 10 Publish/Unpublish-Aktivitäten
+            - Benutzer und Zeitstempel
+            - Automatische Offline-Zeitraum-Berechnung
             
-            **Beispiel - App-Logik:**
-            - Lizenz-Site: Status "gekündigt", unpublished vor 10 Tagen → ✅ OK
-            - CCB gleiche ID: Übernimmt Status und Datum → ✅ OK  
-            - AudioEye gleiche ID: Übernimmt Status und Datum → ✅ OK
+            **3. Intelligente Analyse:**
+            - Automatische Kalendermonat-Regel (≤31 Tage)
+            - False Positive Erkennung
+            - Differenzierung zwischen API-Fehlern und echten Problemen
             
-            **Duda API Verifikation:**
-            Finale Kontrolle über echte Duda-Site-Status für eliminierte False Positives.
+            **4. Erweiterte Empfehlungen:**
+            - Spezifische Handlungsempfehlungen
+            - CRM-Update-Vorschläge
+            - Verrechnungs-Legitimität-Bewertung
             
-            **Ohne Unpublication Date:** Nur "Website online" Status gilt als OK.
+            **5. Performance-Optimierung:**
+            - Rate-Limiting (100ms Pause zwischen Calls)
+            - Timeout-Handling
+            - Fehler-Kategorisierung
+            
+            **Ohne API:** Nur "Website online" Status gilt als OK.
+            **Mit API:** Vollständige Offline-Zeitraum-Analyse und False-Positive-Elimination.
             """)
             
             # Zeige ob Unpublication Date verfügbar ist
