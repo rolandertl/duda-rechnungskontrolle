@@ -24,7 +24,94 @@ class DudaAPIVerifier:
             self.api_endpoint = st.secrets["duda"].get("api_endpoint", "https://api.duda.co")
             self.api_available = bool(self.api_username and self.api_password)
     
-    def get_site_status(self, site_id):
+    def test_api_connection(self, test_site_id="63609f38"):
+        """Testet die API-Verbindung mit einem Site-spezifischen Call"""
+        if not self.api_available:
+            return {
+                'success': False,
+                'error': 'API Credentials nicht verfügbar',
+                'details': 'Bitte API Username und Password in Streamlit Secrets konfigurieren'
+            }
+        
+        try:
+            # Test mit bekannter Site-ID (funktioniert bei Enterprise Accounts)
+            url = f"{self.api_endpoint}/api/sites/multiscreen/{test_site_id}"
+            
+            # Basic Auth Header
+            auth_string = f"{self.api_username}:{self.api_password}"
+            auth_bytes = auth_string.encode('ascii')
+            auth_header = base64.b64encode(auth_bytes).decode('ascii')
+            
+            headers = {
+                'Authorization': f'Basic {auth_header}',
+                'Content-Type': 'application/json',
+                'User-Agent': 'Duda-Billing-Control/1.0'
+            }
+            
+            # API Call mit kurzem Timeout
+            response = requests.get(url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    'success': True,
+                    'test_site_id': test_site_id,
+                    'site_published': data.get('published', False),
+                    'site_domain': data.get('site_domain', 'Unknown'),
+                    'status_code': response.status_code
+                }
+            elif response.status_code == 404:
+                return {
+                    'success': False,
+                    'error': f'Test-Site {test_site_id} nicht gefunden',
+                    'status_code': response.status_code,
+                    'details': 'Site existiert nicht oder gehört nicht zu diesem Account'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': f'HTTP {response.status_code}',
+                    'status_code': response.status_code,
+                    'response_text': response.text[:200],
+                    'details': self._interpret_error_code(response.status_code)
+                }
+                
+        except requests.exceptions.Timeout:
+            return {
+                'success': False,
+                'error': 'API Timeout',
+                'details': 'Die API-Anfrage hat zu lange gedauert (>10s)'
+            }
+        except requests.exceptions.ConnectionError:
+            return {
+                'success': False,
+                'error': 'Verbindungsfehler',
+                'details': 'Kann keine Verbindung zur Duda API herstellen'
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Unerwarteter Fehler: {str(e)}',
+                'details': 'Unbekannter Fehler bei der API-Verbindung'
+            }
+    
+    def _interpret_error_code(self, status_code):
+        """Interpretiert HTTP-Status-Codes und gibt hilfreiche Erklärungen"""
+        error_explanations = {
+            400: "Bad Request - Die Anfrage ist fehlerhaft formatiert oder Site existiert nicht",
+            401: "Unauthorized - API Credentials sind ungültig oder fehlen",
+            403: "Forbidden - Keine Berechtigung für diese Aktion. Mögliche Ursachen:\n" +
+                 "• API Username/Password ist falsch\n" +
+                 "• Account hat keine API-Berechtigung\n" +
+                 "• Kein Zugriff auf die abgefragten Sites",
+            404: "Not Found - Die angeforderte Site existiert nicht oder gehört nicht zu diesem Account",
+            429: "Too Many Requests - Rate Limit erreicht, bitte warten",
+            500: "Internal Server Error - Duda Server Problem",
+            502: "Bad Gateway - Duda Service temporär nicht verfügbar",
+            503: "Service Unavailable - Duda API ist temporär offline"
+        }
+        
+        return error_explanations.get(status_code, f"HTTP {status_code} - Unbekannter Fehler")
         """Holt den aktuellen Status einer Site von der Duda API"""
         if not self.api_available:
             return None
@@ -910,12 +997,12 @@ def main():
             **API Verifikation:**
             Finale Kontrolle über echte Duda-Site-Status für eliminierte False Positives.
             
-            **App Version: v21** 🎉 - Erweiterte API-Verifikation mit Publish-Historie
+            **App Version: v22** 🎉 - API-Verifikation funktioniert (Enterprise-kompatibel)
             """)
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v21*", help="Erweiterte API-Verifikation mit detaillierter Publish-Historie und Offline-Analyse")
+        st.sidebar.markdown("*App Version: v22*", help="API-Verifikation funktioniert jetzt mit Enterprise Accounts - Account-Endpoint übersprungen")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
@@ -1018,7 +1105,22 @@ def display_results(issues, summary, duda_df, crm_df):
     # API Status anzeigen
     if duda_verifier.api_available:
         st.success("🔑 Duda API verfügbar - Erweiterte Verifikation mit Publish-Historie möglich")
-        st.info("💡 Die API-Verifikation prüft den echten Publish-Status jeder Site und wendet automatisch die Kalendermonat-Regel an")
+        
+        # API-Verbindungstest anbieten
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.info("💡 Die API-Verifikation prüft den echten Publish-Status jeder Site und wendet automatisch die Kalendermonat-Regel an")
+        with col2:
+            if st.button("🔍 API testen", help="Teste API-Verbindung"):
+                with st.spinner("Teste API-Verbindung..."):
+                    api_test = duda_verifier.test_api_connection()
+                
+                if api_test['success']:
+                    st.success(f"✅ API funktioniert! Test-Site: {api_test.get('site_domain', 'OK')}")
+                else:
+                    st.error(f"❌ API-Problem: {api_test['error']}")
+                    if 'details' in api_test:
+                        st.warning(api_test['details'])
     else:
         st.warning("⚠️ Duda API nicht konfiguriert - Manuelle Kontrolle aller Probleme erforderlich")
         with st.expander("🔧 API Konfiguration"):
@@ -1027,8 +1129,8 @@ def display_results(issues, summary, duda_df, crm_df):
             
             ```toml
             [duda]
-            api_username = "DEIN_API_USERNAME"
-            api_password = "DEIN_API_PASSWORT"  
+            api_username = "06d7b49e90"
+            api_password = "DEIN_ECHTES_PASSWORD"  
             api_endpoint = "https://api.duda.co"
             ```
             
