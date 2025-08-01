@@ -299,14 +299,33 @@ class FileProcessor:
         
         freq_lower = str(charge_frequency).lower()
         
+        # Haupt-Website-Lizenzen
         if "dudaone monthly" in freq_lower:
             return "Lizenz"
+        
+        # E-Commerce / Online-Shops
         elif any(term in freq_lower for term in ["ecom", "store"]):
             return "Shop"
-        elif "cookiebot" in freq_lower:
-            return "CCB"
+        
+        # Alle anderen sind Apps/Zusatzservices (abhängig von der Haupt-Website)
         else:
-            return "Apps"
+            # Spezielle App-Kategorien für bessere Übersicht
+            if "cookiebot" in freq_lower:
+                return "CCB"
+            elif "audioeye" in freq_lower:
+                return "AudioEye"
+            elif "paperform" in freq_lower:
+                return "Paperform"
+            elif "rss" in freq_lower or "social" in freq_lower:
+                return "RSS/Social"
+            elif "sitesearch" in freq_lower:
+                return "SiteSearch"
+            elif "book like a boss" in freq_lower:
+                return "BookingTool"
+            elif "ivr" in freq_lower:
+                return "IVR"
+            else:
+                return "Apps" # Fallback für unbekannte Apps
 
 
 class DataAnalyzer:
@@ -324,6 +343,14 @@ class DataAnalyzer:
         self.duda_df['Produkttyp'] = self.duda_df['Charge Frequency'].apply(
             self.processor.categorize_charge_frequency
         )
+    
+    def is_app_product(self, product_type):
+        """Prüft ob ein Produkttyp eine App/Zusatzservice ist (abhängig von Lizenz)"""
+        app_types = [
+            'CCB', 'AudioEye', 'Paperform', 'RSS/Social', 
+            'SiteSearch', 'BookingTool', 'IVR', 'Apps'
+        ]
+        return product_type in app_types
     
     def is_status_ok(self, status, unpublication_date=None):
         """Prüft ob ein Workflow-Status als OK gilt"""
@@ -392,8 +419,8 @@ class DataAnalyzer:
             unpublication_date = duda_row.get('Unpublication Date', None)
             product_type = duda_row['Produkttyp']
             
-            # Für CCB/Apps: Unpublication Date von zugehöriger Lizenz-Site übernehmen falls leer
-            if product_type in ['CCB', 'Apps'] and (pd.isna(unpublication_date) or str(unpublication_date).strip() in ['', 'nan']):
+            # Für Apps: Unpublication Date von zugehöriger Lizenz-Site übernehmen falls leer
+            if self.is_app_product(product_type) and (pd.isna(unpublication_date) or str(unpublication_date).strip() in ['', 'nan']):
                 # Suche nach Lizenz-Site mit derselben ID
                 license_match = self.duda_df[
                     (self.duda_df['Site Alias'] == site_alias) & 
@@ -426,8 +453,8 @@ class DataAnalyzer:
                 workflow_status = crm_row['Workflow-Status']
                 
                 if not self.is_status_ok(workflow_status, unpublication_date):
-                    # Für Apps: Prüfen ob es eine zugehörige "Website online" Site gibt
-                    if product_type in ['CCB', 'Apps']:
+                    # Für Apps: Prüfen ob es eine zugehörige Lizenz-Site mit OK-Status gibt
+                    if self.is_app_product(product_type):
                         # Prüfen ob es eine Lizenz-Site mit gleichem Alias und OK-Status gibt
                         license_match = self.duda_df[
                             (self.duda_df['Site Alias'] == site_alias) & 
@@ -438,9 +465,10 @@ class DataAnalyzer:
                             # Verwende das Unpublication Date der Lizenz für die Bewertung
                             license_unpublish = license_match.iloc[0].get('Unpublication Date', None)
                             if self.is_status_ok(workflow_status, license_unpublish):
-                                continue
+                                continue  # App ist OK weil zugehörige Lizenz OK ist
                         
-                        # Sonst ist es ein Problem
+                        # App ist problematisch: entweder keine Lizenz gefunden oder Lizenz auch nicht OK
+                        problem_reason = "ohne Website online" if not license_match.empty else "keine zugehörige Lizenz gefunden"
                         issues.append({
                             'Site_Alias': site_alias,
                             'Site_URL': duda_row.get('Site URL', ''),
@@ -448,7 +476,7 @@ class DataAnalyzer:
                             'Charge_Frequency': duda_row['Charge Frequency'],
                             'CRM_Status': workflow_status,
                             'Projektname': crm_row['Projektname'],
-                            'Problem_Typ': f'{product_type} ohne Website online',
+                            'Problem_Typ': f'{product_type} {problem_reason}',
                             'Unpublish_Tage': self.days_since_unpublication(unpublication_date) if unpublication_date else None
                         })
                     
