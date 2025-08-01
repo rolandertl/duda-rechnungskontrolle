@@ -3,6 +3,7 @@ import pandas as pd
 import chardet
 from io import StringIO
 from urllib.parse import urlparse
+from datetime import datetime, timedelta
 
 class FileProcessor:
     """Klasse für die Verarbeitung von CSV-Dateien"""
@@ -158,6 +159,10 @@ class FileProcessor:
             
             if missing_columns:
                 raise ValueError(f"Fehlende Spalten in Duda-Datei: {missing_columns}")
+            
+            # Optional: Unpublication Date (für Kalendermonat-Regel)
+            if 'Unpublication Date' not in df.columns:
+                st.info("ℹ️ Keine 'Unpublication Date' Spalte gefunden - Kalendermonat-Regel wird nicht angewendet")
             
             # Site Alias als String erzwingen und problematische IDs reparieren
             df['Site Alias'] = df['Site Alias'].astype(str)
@@ -320,13 +325,63 @@ class DataAnalyzer:
             self.processor.categorize_charge_frequency
         )
     
-    def is_status_ok(self, status):
+    def is_status_ok(self, status, unpublication_date=None):
         """Prüft ob ein Workflow-Status als OK gilt"""
         if pd.isna(status):
             return False
         
         status_str = str(status).lower()
-        return "website online" in status_str
+        
+        # Primär-Check: "Website online" ist immer OK
+        if "website online" in status_str:
+            return True
+        
+        # Sekundär-Check: Offline/gekündigt ist OK wenn kürzlich unpublished (≤31 Tage)
+        if any(term in status_str for term in ["offline", "gekündigt"]):
+            if unpublication_date and not pd.isna(unpublication_date):
+                days_since_unpublish = self.days_since_unpublication(unpublication_date)
+                if days_since_unpublish is not None and days_since_unpublish <= 31:
+                    return True  # Kürzlich offline → noch berechtigt verrechnet
+        
+        return False
+    
+    def days_since_unpublication(self, unpublication_date):
+        """Berechnet Tage seit Unpublication Date"""
+        if pd.isna(unpublication_date) or str(unpublication_date).strip() in ['', 'nan']:
+            return None
+            
+        try:
+            # Verschiedene Datumsformate versuchen
+            date_str = str(unpublication_date).strip()
+            
+            # Common formats: YYYY-MM-DD, MM/DD/YYYY, DD.MM.YYYY, etc.
+            formats_to_try = [
+                '%Y-%m-%d',
+                '%m/%d/%Y', 
+                '%d.%m.%Y',
+                '%Y-%m-%d %H:%M:%S',
+                '%m/%d/%Y %H:%M:%S',
+                '%d.%m.%Y %H:%M:%S'
+            ]
+            
+            unpublish_date = None
+            for fmt in formats_to_try:
+                try:
+                    unpublish_date = datetime.strptime(date_str, fmt)
+                    break
+                except ValueError:
+                    continue
+            
+            if unpublish_date is None:
+                return None
+                
+            # Tage zwischen unpublish_date und heute
+            today = datetime.now()
+            delta = today - unpublish_date
+            return delta.days
+            
+        except Exception:
+            return None
     
     def find_issues(self):
         """Findet alle problematischen Einträge"""
@@ -334,6 +389,7 @@ class DataAnalyzer:
         
         for _, duda_row in self.duda_df.iterrows():
             site_alias = str(duda_row['Site Alias']).strip()
+            unpublication_date = duda_row.get('Unpublication Date', None)
             
             # CRM-Eintrag suchen - direkte Suche in der kombinierten Site-ID-Duda Spalte
             crm_match = self.crm_df[self.crm_df['Site-ID-Duda'] == site_alias]
@@ -347,7 +403,8 @@ class DataAnalyzer:
                     'Charge_Frequency': duda_row['Charge Frequency'],
                     'CRM_Status': 'Nicht gefunden',
                     'Projektname': 'Nicht gefunden',
-                    'Problem_Typ': 'Site nicht im CRM'
+                    'Problem_Typ': 'Site nicht im CRM',
+                    'Unpublish_Tage': self.days_since_unpublication(unpublication_date) if unpublication_date else None
                 })
             
             else:
@@ -355,7 +412,7 @@ class DataAnalyzer:
                 crm_row = crm_match.iloc[0]
                 workflow_status = crm_row['Workflow-Status']
                 
-                if not self.is_status_ok(workflow_status):
+                if not self.is_status_ok(workflow_status, unpublication_date):
                     # Für Apps: Prüfen ob es eine zugehörige "Website online" Site gibt
                     if duda_row['Produkttyp'] in ['CCB', 'Apps']:
                         # Prüfen ob es eine Lizenz-Site mit gleichem Alias und OK-Status gibt
@@ -365,8 +422,10 @@ class DataAnalyzer:
                         ]
                         
                         if not license_match.empty:
-                            # Es gibt eine Lizenz-Site, diese sollte OK sein
-                            continue
+                            # Es gibt eine Lizenz-Site, prüfe deren Status auch mit unpublication_date
+                            license_unpublish = license_match.iloc[0].get('Unpublication Date', None)
+                            if self.is_status_ok(workflow_status, license_unpublish):
+                                continue
                         
                         # Sonst ist es ein Problem
                         issues.append({
@@ -376,11 +435,14 @@ class DataAnalyzer:
                             'Charge_Frequency': duda_row['Charge Frequency'],
                             'CRM_Status': workflow_status,
                             'Projektname': crm_row['Projektname'],
-                            'Problem_Typ': f'{duda_row["Produkttyp"]} ohne Website online'
+                            'Problem_Typ': f'{duda_row["Produkttyp"]} ohne Website online',
+                            'Unpublish_Tage': self.days_since_unpublication(unpublication_date) if unpublication_date else None
                         })
                     
                     else:
-                        # Für Lizenzen und Shops: Status muss OK sein
+                        # Für Lizenzen und Shops: Status muss OK sein (inkl. unpublication_date check)
+                        days_unpublished = self.days_since_unpublication(unpublication_date) if unpublication_date else None
+                        
                         issues.append({
                             'Site_Alias': site_alias,
                             'Site_URL': duda_row.get('Site URL', ''),
@@ -388,7 +450,8 @@ class DataAnalyzer:
                             'Charge_Frequency': duda_row['Charge Frequency'],
                             'CRM_Status': workflow_status,
                             'Projektname': crm_row['Projektname'],
-                            'Problem_Typ': 'Abweichender Workflow-Status'
+                            'Problem_Typ': 'Abweichender Workflow-Status',
+                            'Unpublish_Tage': days_unpublished
                         })
         
         return pd.DataFrame(issues)
@@ -500,6 +563,7 @@ def main():
             st.markdown("""
             **Kontrollogik:**
             - ✅ OK: Sites mit 'Website online' Status
+            - ✅ OK: Sites mit 'offline/gekündigt' Status, aber unpublished ≤31 Tage (Kalendermonat-Regel)
             - ⚠️ Kontrolle: Abweichender Status oder nicht im CRM gefunden
             
             **Produkttypen:**
@@ -508,12 +572,15 @@ def main():
             - CCB: Cookiebot Pro monthly
             - Apps: AudioEye, Paperform, etc.
             
-            **App Version: v15** 🎉 - Final, clean & beautiful
+            **Kalendermonat-Regel:**
+            Sites die im aktuellen Abrechnungsmonat offline gingen, werden noch voll verrechnet.
+            
+            **App Version: v16** 🔄 - Unpublication Date Logik hinzugefügt
             """)
         
         # Version Info auch als kleine Badge
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*App Version: v15*", help="Final - alle Features funktionieren perfekt!")
+        st.sidebar.markdown("*App Version: v16*", help="Unpublication Date Berücksichtigung")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
@@ -648,6 +715,12 @@ def display_results(issues, summary, duda_df, crm_df):
             lambda x: f"https://my.duda.co/home/dashboard/overview/{x}" if pd.notna(x) and str(x).strip() else ""
         )
         
+        # Unpublish-Tage für bessere Verständlichkeit formatieren
+        if 'Unpublish_Tage' in filtered_issues_display.columns:
+            filtered_issues_display['Offline_seit'] = filtered_issues_display['Unpublish_Tage'].apply(
+                lambda x: f"{x} Tage" if pd.notna(x) and x is not None else "Unbekannt"
+            )
+        
         # Anzeige der Probleme
         st.dataframe(
             filtered_issues_display,
@@ -663,7 +736,9 @@ def display_results(issues, summary, duda_df, crm_df):
                 'Produkttyp': 'Produkt',
                 'CRM_Status': 'CRM Status',
                 'Problem_Typ': 'Problem',
-                'Projektname': 'Projekt'
+                'Projektname': 'Projekt',
+                'Offline_seit': 'Offline seit',
+                'Unpublish_Tage': None  # Hide raw number column
             }
         )
         
@@ -715,6 +790,27 @@ def display_results(issues, summary, duda_df, crm_df):
                 st.text(f"Einzigartige IDs gesamt: {len(all_ids)}")
             else:
                 st.text("Keine Landingpage-Spalte gefunden")
+                
+        # Zeige Information über Unpublication Date Feature
+        with st.expander("📅 Kalendermonat-Regel"):
+            st.markdown("""
+            **Neue Logik:** Sites mit Status 'offline' oder 'gekündigt' sind OK, wenn sie vor ≤31 Tagen unpublished wurden.
+            
+            **Beispiel:**
+            - Site unpublished am 15. Juni
+            - CRM Status: "gekündigt, Website offline"  
+            - Heute: 20. Juni (5 Tage später)
+            - **Ergebnis: ✅ OK** (weil ≤31 Tage, noch im Abrechnungsmonat)
+            
+            **Ohne Unpublication Date:** Nur "Website online" Status gilt als OK.
+            """)
+            
+            # Zeige ob Unpublication Date verfügbar ist
+            has_unpublish_col = 'Unpublication Date' in duda_df.columns if 'duda_df' in locals() else False
+            if has_unpublish_col:
+                st.success("✅ Unpublication Date Spalte gefunden - Kalendermonat-Regel aktiv")
+            else:
+                st.warning("⚠️ Keine Unpublication Date Spalte - nur Standard-Logik aktiv")
 
 
 if __name__ == "__main__":
