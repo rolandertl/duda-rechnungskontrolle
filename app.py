@@ -41,7 +41,7 @@ def get_app_version():
             version = f.read().strip()
             return version if version else "unknown"
     except FileNotFoundError:
-        return "v25-fallback"
+        return "v26-fallback"
     except Exception:
         return "error"
 
@@ -90,7 +90,7 @@ def display_main_app():
             **API Verifikation:**
             Finale Kontrolle über echte Duda-Site-Status für eliminierte False Positives.
             
-            **App Version: v25** 🎉 - Mit Skyline CRM Integration
+            **App Version: v26** 🎉 - Mit vollständiger Skyline CRM Integration
             """)
         
         # Version Info
@@ -781,10 +781,13 @@ def display_results(issues, summary, duda_df, crm_df):
             
             filtered_issues = issues if selected_type == 'Alle' else issues[issues['Problem_Typ'] == selected_type]
             
-            # Site ID Links für Duda Dashboard hinzufügen
+            # Site ID Links für Duda Dashboard und Skyline hinzufügen
             filtered_issues_display = filtered_issues.copy()
             filtered_issues_display['Duda_Dashboard'] = filtered_issues_display['Site_Alias'].apply(
                 lambda x: f"https://my.duda.co/home/dashboard/overview/{x}" if pd.notna(x) and str(x).strip() else ""
+            )
+            filtered_issues_display['Skyline_Projekt'] = filtered_issues_display['Site_Alias'].apply(
+                lambda x: f"https://edelweissdigital.skylinecrm.com/projectlist?workflowfield=Duda-Site-ID={x}" if pd.notna(x) and str(x).strip() else ""
             )
             
             # Unpublish-Tage für bessere Verständlichkeit formatieren
@@ -799,7 +802,13 @@ def display_results(issues, summary, duda_df, crm_df):
                 'Site_URL': st.column_config.LinkColumn('Site URL'),
                 'Duda_Dashboard': st.column_config.LinkColumn(
                     'Duda Dashboard',
-                    help="Direkt zum Duda-Dashboard"
+                    help="Direkt zum Duda-Dashboard",
+                    display_text="zum Site Overview"
+                ),
+                'Skyline_Projekt': st.column_config.LinkColumn(
+                    'Skyline CRM',
+                    help="Direkt zum Skyline-Projekt",
+                    display_text="zum Skyline-Projekt"
                 ),
                 'Produkttyp': 'Produkt',
                 'CRM_Status': 'CRM Status',
