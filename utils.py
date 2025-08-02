@@ -1,5 +1,6 @@
 """
 Hilfsfunktionen für die Duda Rechnungskontrolle
+Zentrale Utilities die von mehreren Modulen verwendet werden
 """
 
 from datetime import datetime
@@ -36,7 +37,7 @@ def extract_domain(url):
 
 
 def days_since_date(date_value):
-    """Berechnet Tage seit einem gegebenen Datum"""
+    """Berechnet Tage seit einem gegebenen Datum - unterstützt alle Formate"""
     if pd.isna(date_value) or str(date_value).strip() in ['', 'nan']:
         return None
         
@@ -44,7 +45,7 @@ def days_since_date(date_value):
         # Verschiedene Datumsformate versuchen
         date_str = str(date_value).strip()
         
-        # Common formats: YYYY-MM-DD, MM/DD/YYYY, DD.MM.YYYY, etc.
+        # Common formats: YYYY-MM-DD, MM/DD/YYYY, DD.MM.YYYY, ISO, etc.
         formats_to_try = [
             '%Y-%m-%d',
             '%m/%d/%Y', 
@@ -52,8 +53,9 @@ def days_since_date(date_value):
             '%Y-%m-%d %H:%M:%S',
             '%m/%d/%Y %H:%M:%S',
             '%d.%m.%Y %H:%M:%S',
-            '%Y-%m-%dT%H:%M:%S.%fZ',
-            '%Y-%m-%dT%H:%M:%SZ'
+            '%Y-%m-%dT%H:%M:%S.%fZ',  # ISO mit Millisekunden
+            '%Y-%m-%dT%H:%M:%SZ',     # ISO ohne Millisekunden
+            '%Y-%m-%dT%H:%M:%S'       # ISO ohne Z
         ]
         
         parsed_date = None
@@ -124,7 +126,7 @@ def categorize_charge_frequency(charge_frequency):
 
 
 def format_api_credentials_debug(username, password_masked=True):
-    """Formatiert API-Credentials für Debug-Ausgabe"""
+    """Formatiert API-Credentials für Debug-Ausgabe (sicher)"""
     if password_masked:
         return f"Username: {username[:8]}... | Password: ***"
     return f"Username: {username} | Password: [HIDDEN]"
@@ -146,3 +148,19 @@ def validate_site_id(site_id):
         return False
     
     return True
+
+
+def format_currency(amount, currency="EUR"):
+    """Formatiert Geldbeträge für bessere Lesbarkeit"""
+    try:
+        amount_float = float(amount)
+        return f"{amount_float:,.2f} {currency}"
+    except (ValueError, TypeError):
+        return str(amount)
+
+
+def safe_string_convert(value, default=""):
+    """Sichere String-Konvertierung mit Fallback"""
+    if pd.isna(value) or value is None:
+        return default
+    return str(value).strip()
