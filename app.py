@@ -9,6 +9,7 @@ from file_processor import FileProcessor
 from data_analyzer import DataAnalyzer
 from api_verifier import DudaAPIVerifier
 from report_generator import ReportGenerator
+from utils import extract_domain
 
 
 def main():
@@ -289,6 +290,204 @@ def display_api_debug():
         """)
 
 
+def display_site_overview(duda_df, issues_df):
+    """Zeigt eine strukturierte Übersicht aller Sites nach Produkttypen"""
+    
+    st.subheader("🗂️ Site-Übersicht")
+    st.markdown("Alle Sites strukturiert nach Produkttypen mit direkten Dashboard-Links")
+    
+    # Problem-Sites für schnelle Identifikation
+    problem_sites = set(issues_df['Site_Alias'].tolist()) if not issues_df.empty else set()
+    
+    # Sites nach Produkttyp gruppieren
+    grouped_sites = duda_df.groupby('Produkttyp')
+    
+    # Reihenfolge der Produkttypen (wichtigste zuerst)
+    product_order = ['Lizenz', 'Shop', 'CCB', 'AudioEye', 'Paperform', 'RSS/Social', 'SiteSearch', 'BookingTool', 'IVR', 'Apps', 'Unbekannt']
+    
+    for product_type in product_order:
+        if product_type not in grouped_sites.groups:
+            continue
+            
+        sites_of_type = grouped_sites.get_group(product_type)
+        
+        # Icon und Beschreibung je nach Produkttyp
+        type_info = get_product_type_info(product_type)
+        
+        # Problem-Count für diesen Produkttyp
+        type_problems = len([site for site in sites_of_type['Site Alias'] if site in problem_sites])
+        ok_count = len(sites_of_type) - type_problems
+        
+        # Akkordeon-Header mit Status-Info
+        header_text = f"{type_info['icon']} {product_type} ({len(sites_of_type)} Sites: {ok_count} OK, {type_problems} Probleme)"
+        
+        with st.expander(header_text, expanded=(product_type in ['Lizenz', 'Shop'])):
+            if len(sites_of_type) == 0:
+                st.info(f"Keine {product_type}-Sites gefunden")
+                continue
+            
+            # Beschreibung des Produkttyps
+            if type_info['description']:
+                st.markdown(f"*{type_info['description']}*")
+            
+            # Filter-Optionen
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                show_filter = st.selectbox(
+                    "Filter:",
+                    ["Alle", "Nur OK", "Nur Probleme"],
+                    key=f"filter_{product_type}"
+                )
+            
+            with col2:
+                sort_by = st.selectbox(
+                    "Sortieren:",
+                    ["Site ID", "Domain", "Status"],
+                    key=f"sort_{product_type}"
+                )
+            
+            with col3:
+                sort_desc = st.checkbox("Absteigend", key=f"desc_{product_type}")
+            
+            # Daten für Tabelle aufbereiten
+            display_sites = prepare_sites_table(sites_of_type, problem_sites, show_filter, sort_by, sort_desc)
+            
+            if display_sites.empty:
+                st.info(f"Keine Sites entsprechen dem Filter '{show_filter}'")
+                continue
+            
+            # Tabelle anzeigen
+            st.dataframe(
+                display_sites,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Site_ID': 'Site ID',
+                    'Domain': 'Domain',
+                    'Status': st.column_config.TextColumn(
+                        'Status',
+                        help="OK = Keine Probleme, Problem = Manuelle Kontrolle nötig"
+                    ),
+                    'Dashboard': st.column_config.LinkColumn(
+                        'Duda Dashboard',
+                        help="Direkt zum Duda-Dashboard",
+                        display_text="Dashboard öffnen"
+                    ),
+                    'Charge_Frequency': 'Charge Frequency'
+                },
+                height=min(400, len(display_sites) * 35 + 50)  # Dynamische Höhe
+            )
+            
+            # Zusätzliche Aktionen
+            if len(display_sites) > 10:
+                st.caption(f"💡 **Tipp:** {len(display_sites)} {product_type}-Sites gefunden. Nutze die Filter um spezifische Sites zu finden.")
+
+
+def get_product_type_info(product_type):
+    """Gibt Icon und Beschreibung für jeden Produkttyp zurück"""
+    
+    type_mapping = {
+        'Lizenz': {
+            'icon': '🌐',
+            'description': 'Haupt-Website-Lizenzen (DudaOne Monthly) - Basis für alle anderen Services'
+        },
+        'Shop': {
+            'icon': '🛒', 
+            'description': 'E-Commerce-Shops mit Warenkörben und Zahlungsabwicklung'
+        },
+        'CCB': {
+            'icon': '🍪',
+            'description': 'Cookiebot Pro - Cookie-Banner und GDPR-Compliance'
+        },
+        'AudioEye': {
+            'icon': '♿',
+            'description': 'Accessibility-Service für barrierefreie Websites'
+        },
+        'Paperform': {
+            'icon': '📝',
+            'description': 'Erweiterte Formular- und Survey-Funktionen'
+        },
+        'RSS/Social': {
+            'icon': '📱',
+            'description': 'Social Media Feeds und RSS-Integration'
+        },
+        'SiteSearch': {
+            'icon': '🔍',
+            'description': 'Website-interne Suchfunktionen'
+        },
+        'BookingTool': {
+            'icon': '📅',
+            'description': 'Terminbuchungs-System (Book Like A Boss)'
+        },
+        'IVR': {
+            'icon': '☎️',
+            'description': 'Interactive Voice Response System'
+        },
+        'Apps': {
+            'icon': '🔧',
+            'description': 'Weitere Add-On-Services und Erweiterungen'
+        },
+        'Unbekannt': {
+            'icon': '❓',
+            'description': 'Nicht kategorisierte Charge Frequency'
+        }
+    }
+    
+    return type_mapping.get(product_type, {'icon': '📦', 'description': ''})
+
+
+def prepare_sites_table(sites_df, problem_sites, show_filter, sort_by, sort_desc):
+    """Bereitet die Sites-Daten für die Tabellen-Anzeige vor"""
+    
+    # Basis-Daten zusammenstellen
+    display_data = []
+    
+    for _, site in sites_df.iterrows():
+        site_id = site['Site Alias']
+        site_url = site.get('Site URL', '')
+        
+        # Domain aus URL extrahieren
+        domain = extract_domain(site_url) if site_url and site_url != 'nan' else 'Keine Domain'
+        
+        # Status bestimmen
+        status = "❌ Problem" if site_id in problem_sites else "✅ OK"
+        
+        # Dashboard-Link
+        dashboard_link = f"https://my.duda.co/home/dashboard/overview/{site_id}"
+        
+        display_data.append({
+            'Site_ID': site_id,
+            'Domain': domain,
+            'Status': status,
+            'Dashboard': dashboard_link,
+            'Charge_Frequency': site.get('Charge Frequency', 'Unbekannt'),
+            'Status_Sort': 0 if site_id in problem_sites else 1  # Für Sortierung
+        })
+    
+    display_df = pd.DataFrame(display_data)
+    
+    if display_df.empty:
+        return display_df
+    
+    # Filter anwenden
+    if show_filter == "Nur OK":
+        display_df = display_df[display_df['Status_Sort'] == 1]
+    elif show_filter == "Nur Probleme":
+        display_df = display_df[display_df['Status_Sort'] == 0]
+    
+    # Sortierung anwenden
+    if sort_by == "Site ID":
+        display_df = display_df.sort_values('Site_ID', ascending=not sort_desc)
+    elif sort_by == "Domain":
+        display_df = display_df.sort_values('Domain', ascending=not sort_desc)
+    elif sort_by == "Status":
+        display_df = display_df.sort_values('Status_Sort', ascending=not sort_desc)
+    
+    # Hilfsspalte entfernen
+    return display_df.drop('Status_Sort', axis=1)
+
+
 def display_results(issues, summary, duda_df, crm_df):
     """Zeigt die Analyseergebnisse an"""
     
@@ -385,6 +584,9 @@ def display_results(issues, summary, duda_df, crm_df):
             use_container_width=True,
             hide_index=True
         )
+    
+    # NEU: Site-Übersicht
+    display_site_overview(duda_df, issues)
     
     # Problematische Einträge
     if not issues.empty:
