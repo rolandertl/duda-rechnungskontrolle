@@ -296,6 +296,12 @@ def display_site_overview(duda_df, issues_df):
     st.subheader("🗂️ Site-Übersicht")
     st.markdown("Alle Sites strukturiert nach Produkttypen mit direkten Dashboard-Links")
     
+    # Produkttyp-Spalte hinzufügen falls sie nicht existiert
+    if 'Produkttyp' not in duda_df.columns:
+        from utils import categorize_charge_frequency
+        duda_df = duda_df.copy()
+        duda_df['Produkttyp'] = duda_df['Charge Frequency'].apply(categorize_charge_frequency)
+    
     # Problem-Sites für schnelle Identifikation
     problem_sites = set(issues_df['Site_Alias'].tolist()) if not issues_df.empty else set()
     
