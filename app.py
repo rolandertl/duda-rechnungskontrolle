@@ -1,6 +1,6 @@
 """
 Hauptdatei für die Duda Rechnungskontrolle
-Modulare Version v22 - Enterprise-kompatible API-Verifikation
+Modulare Version v25 - Mit Skyline CRM Integration
 """
 
 import streamlit as st
@@ -41,7 +41,7 @@ def get_app_version():
             version = f.read().strip()
             return version if version else "unknown"
     except FileNotFoundError:
-        return "v22-fallback"
+        return "v25-fallback"
     except Exception:
         return "error"
 
@@ -90,7 +90,7 @@ def display_main_app():
             **API Verifikation:**
             Finale Kontrolle über echte Duda-Site-Status für eliminierte False Positives.
             
-            **App Version: v23** 🎉 - Modulare Architektur mit Enterprise-API + Site-Übersicht
+            **App Version: v25** 🎉 - Mit Skyline CRM Integration
             """)
         
         # Version Info
@@ -138,7 +138,7 @@ def display_main_app():
             - Abgleich mit CRM-Workflow-Status
             - Identifikation von Unstimmigkeiten
             - Export der Kontrollergebnisse
-            - **NEU:** Modulare Architektur
+            - **NEU:** Skyline CRM Integration
             """)
         
         with col2:
@@ -148,7 +148,7 @@ def display_main_app():
             - Liste aller problematischen Einträge
             - Downloadbare Berichte
             - Übersichtliche Darstellung
-            - **NEU:** Enterprise-API-Verifikation
+            - **NEU:** Direkte Links zu Skyline-Projekten
             """)
 
 
@@ -468,7 +468,12 @@ def display_site_overview(duda_df, issues_df):
                     'Dashboard': st.column_config.LinkColumn(
                         'Duda Dashboard',
                         help="Direkt zum Duda-Dashboard",
-                        display_text="Dashboard öffnen"
+                        display_text="zum Site Overview"
+                    ),
+                    'Skyline': st.column_config.LinkColumn(
+                        'Skyline CRM',
+                        help="Direkt zum Skyline-Projekt",
+                        display_text="zum Skyline-Projekt"
                     ),
                     'Charge_Frequency': 'Charge Frequency'
                 },
@@ -553,11 +558,15 @@ def prepare_sites_table(sites_df, problem_sites, show_filter, sort_by, sort_desc
         # Dashboard-Link
         dashboard_link = f"https://my.duda.co/home/dashboard/overview/{site_id}"
         
+        # Skyline CRM Link
+        skyline_link = f"https://edelweissdigital.skylinecrm.com/projectlist?workflowfield=Duda-Site-ID={site_id}"
+        
         display_data.append({
             'Site_ID': site_id,
             'Domain': domain,
             'Status': status,
             'Dashboard': dashboard_link,
+            'Skyline': skyline_link,
             'Charge_Frequency': site.get('Charge Frequency', 'Unbekannt'),
             'Status_Sort': 0 if site_id in problem_sites else 1  # Für Sortierung
         })
