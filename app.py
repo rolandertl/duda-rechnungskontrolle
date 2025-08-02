@@ -21,6 +21,20 @@ def main():
     st.title("💰 Duda Rechnungskontrolle")
     st.markdown("---")
     
+    # Tab-Navigation für bessere Organisation
+    tab1, tab2 = st.tabs(["📊 Rechnungskontrolle", "🧪 API Debug"])
+    
+    with tab1:
+        # Original App Content
+        display_main_app()
+    
+    with tab2:
+        # Neuer API Debug Bereich
+        display_api_debug()
+
+
+def display_main_app():
+    """Zeigt die ursprüngliche Hauptapp an"""
     # Sidebar für File Upload
     with st.sidebar:
         st.header("📁 Dateien hochladen")
@@ -122,6 +136,157 @@ def main():
             - Übersichtliche Darstellung
             - **NEU:** Enterprise-API-Verifikation
             """)
+
+
+def display_api_debug():
+    """Zeigt den API Debug Bereich an"""
+    st.header("🧪 API Debug Tool")
+    st.markdown("Teste einzelne Sites ohne CSV-Upload")
+    
+    # API Verifier initialisieren
+    verifier = DudaAPIVerifier()
+    
+    # API Status
+    if verifier.api_available:
+        st.success("✅ API verfügbar")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.info(f"Endpoint: {verifier.api_endpoint}")
+        with col2:
+            st.info(f"Debug Mode: {'✅' if verifier.debug_mode else '❌'}")
+    else:
+        st.error("❌ API nicht konfiguriert")
+        st.stop()
+    
+    # Einzelne Site testen
+    st.subheader("🔍 Einzelne Site testen")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        test_site_id = st.text_input(
+            "Site-ID eingeben:",
+            placeholder="z.B. dfc0dce1",
+            help="Gib eine Site-ID ein um detaillierte API-Informationen zu erhalten"
+        )
+    
+    with col2:
+        st.write("")  # Spacing
+        test_button = st.button("🚀 Site testen", type="primary", use_container_width=True)
+    
+    # Beispiel-IDs
+    st.markdown("**Beispiel-IDs zum Testen:**")
+    example_ids = ["dfc0dce1", "763ce497", "b6e76ede", "67d327c5", "63609f38"]
+    
+    cols = st.columns(len(example_ids))
+    for i, example_id in enumerate(example_ids):
+        with cols[i]:
+            if st.button(f"`{example_id}`", key=f"example_{i}"):
+                test_site_id = example_id
+                test_button = True
+    
+    # Site testen
+    if test_site_id and test_button:
+        st.markdown("---")
+        st.subheader(f"📋 Testergebnisse für Site: `{test_site_id}`")
+        
+        with st.spinner(f"Teste Site {test_site_id}..."):
+            # Debug-Modus temporär aktivieren für detaillierte Ausgabe
+            original_debug = verifier.debug_mode
+            verifier.debug_mode = True
+            
+            # API Call
+            result = verifier.get_site_status(test_site_id)
+            
+            # Debug-Modus zurücksetzen
+            verifier.debug_mode = original_debug
+        
+        # Zusätzliche Ergebnis-Analyse
+        st.markdown("---")
+        st.subheader("📊 API-Ergebnis Zusammenfassung")
+        
+        if result and 'error' not in result:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Published", "✅ Online" if result.get('is_published') else "❌ Offline")
+            
+            with col2:
+                unpub_date = result.get('unpublication_date', 'N/A')
+                st.metric("Unpublish Date", unpub_date if unpub_date != 'N/A' else "Nicht verfügbar")
+            
+            with col3:
+                last_pub = result.get('last_published', 'N/A')
+                st.metric("Last Published", last_pub if last_pub != 'N/A' else "Nicht verfügbar")
+            
+            # Publishing History falls vorhanden
+            if result.get('publish_history'):
+                st.subheader("📅 Publishing History")
+                
+                history_data = []
+                for activity in result['publish_history']:
+                    history_data.append({
+                        'Activity': activity.get('activity_type', 'Unknown'),
+                        'Date': activity.get('date', 'No date'),
+                        'User': activity.get('user', 'System'),
+                        'Description': activity.get('description', '')
+                    })
+                
+                if history_data:
+                    history_df = pd.DataFrame(history_data)
+                    st.dataframe(history_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Keine Publishing-Historie verfügbar")
+            
+            # Raw API Response
+            with st.expander("🔧 Raw API Response"):
+                st.json(result)
+        
+        elif result:
+            st.error(f"❌ API Fehler: {result.get('error', 'Unbekannt')}")
+            if 'details' in result:
+                st.warning(f"Details: {result['details']}")
+            
+            with st.expander("🔧 Raw Error Response"):
+                st.json(result)
+        
+        else:
+            st.error("❌ Keine Antwort von der API erhalten")
+    
+    # API-Tipps
+    st.markdown("---")
+    st.subheader("💡 Debug-Tipps")
+    
+    with st.expander("🔧 Häufige Probleme"):
+        st.markdown("""
+        **Keine Unpublication Date:**
+        - Viele Sites haben kein `unpublication_date` im Site-Details-Endpoint
+        - Suche nach `site_unpublished` Activities in der Publishing-Historie
+        - Manche sehr alte Sites haben keine Activity-Historie
+        
+        **403/404 Fehler:**
+        - Site gehört nicht zu deinem Account
+        - Site wurde gelöscht oder archiviert
+        - API-Berechtigung unvollständig
+        
+        **Leere Activity-Liste:**
+        - Enterprise-Accounts haben manchmal andere Activity-Zugriffe
+        - Site ist sehr neu (keine Historie)
+        - Activities werden nicht für alle Sites gespeichert
+        """)
+    
+    with st.expander("🧪 Debug-Mode aktivieren"):
+        st.markdown("""
+        Für detaillierte Debug-Ausgaben, setze in deinen Streamlit Secrets:
+        
+        ```toml
+        [duda]
+        api_username = "06d7b49e90"
+        api_password = "DEIN_PASSWORD"
+        api_endpoint = "https://api.duda.co"
+        debug_mode = true
+        ```
+        """)
 
 
 def display_results(issues, summary, duda_df, crm_df):
