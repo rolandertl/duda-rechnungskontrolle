@@ -336,24 +336,13 @@ class DudaAPIVerifier:
         # Wenn kein Unpublish-Datum in API, versuche es aus der History zu extrahieren
         if days_offline is None and publish_history:
             for activity in publish_history:
-                if 'unpublish' in activity.get('type', '').lower():
-                    try:
-                        activity_date = activity.get('date')
-                        if activity_date:
-                            # Datum parsen
-                            unpub_dt = None
-                            for fmt in ['%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ']:
-                                try:
-                                    unpub_dt = datetime.strptime(activity_date.replace('Z', ''), fmt.replace('Z', ''))
-                                    break
-                                except ValueError:
-                                    continue
-                            
-                            if unpub_dt:
-                                days_offline = (datetime.now() - unpub_dt).days
-                                break
-                    except Exception:
-                        continue
+                # Korrekte Activity-Type-Namen verwenden
+                if activity.get('activity_type') == 'site_unpublished':
+                    activity_date = activity.get('date')
+                    if activity_date:
+                        days_offline = days_since_date(activity_date)
+                        if days_offline is not None:
+                            break
         
         # Kalendermonat-Regel anwenden (≤31 Tage)
         if days_offline is not None and days_offline <= 31:
