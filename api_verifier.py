@@ -170,15 +170,19 @@ class DudaAPIVerifier:
                 publish_history = self.get_publish_history(site_id)
                 
                 return {
-                    'is_published': data.get('published', False),
-                    'last_published': data.get('last_published'),
-                    'unpublication_date': data.get('unpublication_date'),
+                    'is_published': data.get('publish_status') == 'PUBLISHED',  # KORREKTUR!
+                    'publish_status': data.get('publish_status', 'unknown'),     # Original-Wert beibehalten
+                    'last_published': data.get('last_published_date'),           # KORREKTUR!
+                    'first_published': data.get('first_published_date'),         # NEU!
+                    'unpublication_date': data.get('unpublication_date'),        # Falls verfügbar
                     'site_status': data.get('site_status', 'unknown'),
                     'publish_history': publish_history,
                     'site_domain': data.get('site_domain', ''),
                     'fqdn': data.get('fqdn', ''),
-                    'preview_url': data.get('preview_url', ''),
-                    'api_response_code': response.status_code
+                    'preview_url': data.get('preview_site_url', ''),             # KORREKTUR!
+                    'api_response_code': response.status_code,
+                    'creation_date': data.get('creation_date'),                  # NEU!
+                    'modification_date': data.get('modification_date')           # NEU!
                 }
             elif response.status_code == 404:
                 return {
