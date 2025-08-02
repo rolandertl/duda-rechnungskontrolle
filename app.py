@@ -34,6 +34,18 @@ def main():
         display_api_debug()
 
 
+def get_app_version():
+    """Liest die Versionsnummer aus der version.txt Datei"""
+    try:
+        with open('version.txt', 'r', encoding='utf-8') as f:
+            version = f.read().strip()
+            return version if version else "unknown"
+    except FileNotFoundError:
+        return "v22-fallback"
+    except Exception:
+        return "error"
+
+
 def display_main_app():
     """Zeigt die ursprüngliche Hauptapp an"""
     # Sidebar für File Upload
@@ -78,12 +90,13 @@ def display_main_app():
             **API Verifikation:**
             Finale Kontrolle über echte Duda-Site-Status für eliminierte False Positives.
             
-            **App Version: v22** 🎉 - Modulare Architektur mit Enterprise-API
+            **App Version: v23** 🎉 - Modulare Architektur mit Enterprise-API + Site-Übersicht
             """)
         
         # Version Info
+        app_version = get_app_version()
         st.sidebar.markdown("---")
-        st.sidebar.markdown("*Modulare Version: v22*", help="Aufgeteilte Architektur mit Enterprise-kompatible API-Verifikation")
+        st.sidebar.markdown(f"*Version: {app_version}*", help="Aktualisiert aus version.txt - zeigt ob neueste Version geladen wurde")
     
     # Main Content
     if duda_file is not None and crm_file is not None:
