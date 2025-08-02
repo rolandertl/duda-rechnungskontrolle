@@ -303,11 +303,29 @@ def display_api_debug():
         """)
 
 
-def display_site_overview(duda_df, issues_df):
-    """Zeigt eine strukturierte Übersicht aller Sites nach Produkttypen"""
+def create_domain_mapping(duda_df):
+    """Erstellt eine Übersetzungstabelle Site-ID → Domain aus Lizenzen und Shops"""
     
-    st.subheader("🗂️ Site-Übersicht")
-    st.markdown("Alle Sites strukturiert nach Produkttypen mit direkten Dashboard-Links")
+    domain_mapping = {}
+    
+    # Filtere nach Lizenzen und Shops (haben eigene Domains)
+    primary_sites = duda_df[duda_df['Produkttyp'].isin(['Lizenz', 'Shop'])].copy()
+    
+    for _, site in primary_sites.iterrows():
+        site_id = str(site['Site Alias']).strip()
+        site_url = site.get('Site URL', '')
+        
+        # Domain extrahieren
+        if site_url and site_url != 'nan':
+            domain = extract_domain(site_url)
+            if domain:  # Nur wenn Domain erfolgreich extrahiert
+                domain_mapping[site_id] = domain
+    
+    return domain_mapping
+
+
+def enrich_sites_with_domains(duda_df):
+    """Reichert alle Sites mit korrekten Domains an (Apps erben von Lizenzen)"""
     
     # Produkttyp-Spalte hinzufügen falls sie nicht existiert
     if 'Produkttyp' not in duda_df.columns:
@@ -315,11 +333,70 @@ def display_site_overview(duda_df, issues_df):
         duda_df = duda_df.copy()
         duda_df['Produkttyp'] = duda_df['Charge Frequency'].apply(categorize_charge_frequency)
     
+    # Domain-Mapping erstellen
+    domain_mapping = create_domain_mapping(duda_df)
+    
+    # Alle Sites durchgehen und Domains zuweisen
+    enriched_sites = []
+    
+    for _, site in duda_df.iterrows():
+        site_dict = site.to_dict()
+        site_id = str(site['Site Alias']).strip()
+        current_url = site.get('Site URL', '')
+        
+        # Für Lizenzen und Shops: Domain aus Site URL verwenden
+        if site['Produkttyp'] in ['Lizenz', 'Shop']:
+            if current_url and current_url != 'nan':
+                site_dict['Enriched_Domain'] = extract_domain(current_url)
+            else:
+                site_dict['Enriched_Domain'] = 'Keine Domain'
+        
+        # Für Apps: Domain von zugehöriger Lizenz erben
+        else:
+            if site_id in domain_mapping:
+                site_dict['Enriched_Domain'] = domain_mapping[site_id]
+                # Auch die Site URL für Apps setzen falls leer
+                if not current_url or current_url == 'nan':
+                    # Konstruiere URL basierend auf der Domain
+                    domain = domain_mapping[site_id]
+                    site_dict['Site URL'] = f"https://{domain}" if not domain.startswith('http') else domain
+            else:
+                site_dict['Enriched_Domain'] = 'nan'  # Keine zugehörige Lizenz gefunden
+        
+        enriched_sites.append(site_dict)
+    
+    return pd.DataFrame(enriched_sites)
+
+
+def display_site_overview(duda_df, issues_df):
+    """Zeigt eine strukturierte Übersicht aller Sites nach Produkttypen"""
+    
+    st.subheader("🗂️ Site-Übersicht")
+    st.markdown("Alle Sites strukturiert nach Produkttypen mit direkten Dashboard-Links")
+    
+    # Sites mit korrekten Domains anreichern
+    enriched_df = enrich_sites_with_domains(duda_df)
+    
+    # Debug Info für Domain-Mapping
+    with st.expander("🔧 Domain-Mapping Debug"):
+        domain_mapping = create_domain_mapping(enriched_df)
+        st.write(f"**{len(domain_mapping)} Domain-Zuordnungen gefunden:**")
+        
+        mapping_list = []
+        for site_id, domain in domain_mapping.items():
+            mapping_list.append({'Site ID': site_id, 'Domain': domain})
+        
+        if mapping_list:
+            mapping_df = pd.DataFrame(mapping_list)
+            st.dataframe(mapping_df, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Keine Domain-Zuordnungen gefunden!")
+    
     # Problem-Sites für schnelle Identifikation
     problem_sites = set(issues_df['Site_Alias'].tolist()) if not issues_df.empty else set()
     
     # Sites nach Produkttyp gruppieren
-    grouped_sites = duda_df.groupby('Produkttyp')
+    grouped_sites = enriched_df.groupby('Produkttyp')
     
     # Reihenfolge der Produkttypen (wichtigste zuerst)
     product_order = ['Lizenz', 'Shop', 'CCB', 'AudioEye', 'Paperform', 'RSS/Social', 'SiteSearch', 'BookingTool', 'IVR', 'Apps', 'Unbekannt']
@@ -464,10 +541,11 @@ def prepare_sites_table(sites_df, problem_sites, show_filter, sort_by, sort_desc
     
     for _, site in sites_df.iterrows():
         site_id = site['Site Alias']
-        site_url = site.get('Site URL', '')
         
-        # Domain aus URL extrahieren
-        domain = extract_domain(site_url) if site_url and site_url != 'nan' else 'Keine Domain'
+        # Verwende die angereicherte Domain
+        domain = site.get('Enriched_Domain', 'Keine Domain')
+        if domain == 'nan':
+            domain = 'Keine Domain'
         
         # Status bestimmen
         status = "❌ Problem" if site_id in problem_sites else "✅ OK"
