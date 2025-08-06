@@ -41,7 +41,7 @@ def get_app_version():
             version = f.read().strip()
             return version if version else "unknown"
     except FileNotFoundError:
-        return "v26-fallback"
+        return "v27-fallback"
     except Exception:
         return "error"
 
@@ -90,7 +90,7 @@ def display_main_app():
             **API Verifikation:**
             Finale Kontrolle über echte Duda-Site-Status für eliminierte False Positives.
             
-            **App Version: v26** 🎉 - Mit vollständiger Skyline CRM Integration
+            **App Version: v27** 🎉 - API Activities Fix
             """)
         
         # Version Info
