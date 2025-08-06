@@ -1,5 +1,6 @@
 """
 Duda API Verifier Klasse mit erweiterten Debug-Features
+Version 28: Apps erben Unpublish-Datum von Lizenzen
 """
 
 import streamlit as st
@@ -8,7 +9,7 @@ import base64
 import time
 import pandas as pd
 from datetime import datetime
-from utils import days_since_date, format_api_credentials_debug
+from utils import days_since_date, format_api_credentials_debug, is_app_product
 
 
 class DudaAPIVerifier:
@@ -296,6 +297,7 @@ class DudaAPIVerifier:
                     activity_date = activity.get('date')
                     if activity_date:
                         days_offline = days_since_date(activity_date)
+                        unpublish_date = activity_date  # WICHTIG: Datum speichern!
                         if days_offline is not None:
                             break
         
@@ -304,7 +306,8 @@ class DudaAPIVerifier:
             return {
                 'classification': 'false_positive',
                 'reason': f'Site offline seit {days_offline} Tagen (≤31 Tage = Kalendermonat-Regel)',
-                'recommendation': 'Verrechnung berechtigt - im aktuellen Abrechnungsmonat offline gegangen'
+                'recommendation': 'Verrechnung berechtigt - im aktuellen Abrechnungsmonat offline gegangen',
+                'unpublish_date': unpublish_date  # Datum für Apps weitergeben
             }
         
         # Fall 3: Echtes Problem - Site ist länger offline oder unbekanntes Offline-Datum
@@ -313,7 +316,8 @@ class DudaAPIVerifier:
         return {
             'classification': 'confirmed_issue',
             'reason': f'Site ist offline {offline_info}',
-            'recommendation': 'Manuelle Kontrolle - möglicherweise nicht berechtigt verrechnet'
+            'recommendation': 'Manuelle Kontrolle - möglicherweise nicht berechtigt verrechnet',
+            'unpublish_date': unpublish_date  # Datum für Apps weitergeben
         }
     
     def verify_issues(self, issues_df):
@@ -326,6 +330,9 @@ class DudaAPIVerifier:
         api_errors = []
         api_calls_made = 0
         
+        # Cache für API-Ergebnisse (um doppelte Calls für gleiche Sites zu vermeiden)
+        api_cache = {}
+        
         st.info(f"🔍 Finale Verifikation von {len(issues_df)} problematischen Sites über Duda API...")
         
         # Progress Bar
@@ -334,15 +341,40 @@ class DudaAPIVerifier:
         
         for idx, (_, issue) in enumerate(issues_df.iterrows()):
             site_id = issue['Site_Alias']
+            product_type = issue.get('Produkttyp', '')
             
             # Progress Update
             progress = (idx + 1) / len(issues_df)
             progress_bar.progress(progress)
             status_text.text(f"Prüfe Site {idx + 1}/{len(issues_df)}: {site_id}")
             
-            # API Call
-            api_result = self.get_site_status(site_id)
-            api_calls_made += 1
+            # API Call (mit Cache)
+            if site_id in api_cache:
+                api_result = api_cache[site_id]
+                st.write(f"📋 Verwende Cache für {site_id}")
+            else:
+                api_result = self.get_site_status(site_id)
+                api_cache[site_id] = api_result
+                api_calls_made += 1
+            
+            # Für Apps: Wenn kein Unpublish-Datum gefunden, versuche es von der Lizenz zu holen
+            if is_app_product(product_type) and api_result and 'error' not in api_result:
+                if not api_result.get('unpublication_date') and not api_result.get('publish_history'):
+                    # Versuche die Lizenz-Site zu finden und deren Status zu holen
+                    if site_id in api_cache:
+                        license_result = api_cache[site_id]
+                    else:
+                        st.write(f"🔍 Hole Lizenz-Daten für App {product_type}: {site_id}")
+                        license_result = self.get_site_status(site_id)
+                        api_cache[site_id] = license_result
+                        api_calls_made += 1
+                    
+                    # Übertrage Unpublish-Daten von Lizenz auf App
+                    if license_result and 'error' not in license_result:
+                        api_result['unpublication_date'] = license_result.get('unpublication_date')
+                        api_result['publish_history'] = license_result.get('publish_history', [])
+                        api_result['last_published'] = license_result.get('last_published')
+                        st.write(f"📋 Unpublish-Daten von Lizenz übernommen für {product_type}")
             
             # Ergebnis analysieren
             analysis = self.analyze_api_result(site_id, api_result, issue)
@@ -352,7 +384,8 @@ class DudaAPIVerifier:
             if api_result and 'error' not in api_result:
                 enriched_issue['API_Published'] = api_result.get('is_published', False)
                 enriched_issue['API_Last_Published'] = api_result.get('last_published', '')
-                enriched_issue['API_Unpublish_Date'] = api_result.get('unpublication_date', '')
+                # Verwende das Datum aus der Analyse (falls aus History extrahiert)
+                enriched_issue['API_Unpublish_Date'] = analysis.get('unpublish_date', api_result.get('unpublication_date', ''))
                 enriched_issue['API_Site_Domain'] = api_result.get('site_domain', '')
             else:
                 enriched_issue['API_Published'] = 'ERROR'
