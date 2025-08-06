@@ -244,12 +244,14 @@ class DudaAPIVerifier:
                 # Nach Publish/Unpublish Aktivitäten filtern
                 publish_activities = []
                 for activity in activities:
-                    activity_type = activity.get('activity_type', '').lower()
+                    # WICHTIG: Feld heißt 'activity', nicht 'activity_type'!
+                    activity_type = activity.get('activity', '').lower()
                     if any(term in activity_type for term in ['publish', 'unpublish']):
                         publish_activities.append({
                             'type': activity_type,
                             'date': activity.get('date'),
-                            'user': activity.get('user', 'System'),
+                            'user': activity.get('account_name', activity.get('user', 'System')),
+                            'source': activity.get('source', ''),
                             'description': activity.get('description', '')
                         })
                 
