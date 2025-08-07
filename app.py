@@ -233,6 +233,73 @@ def display_api_debug():
                 last_pub = result.get('last_published', 'N/A')
                 st.metric("Last Published", last_pub if last_pub != 'N/A' else "Nicht verfügbar")
             
+            # NEU: Activities API direkt aufrufen
+            st.markdown("---")
+            st.subheader("📅 Activities API Test")
+            
+            if st.button("🔍 Activities abrufen", key="get_activities"):
+                activities_url = f"{verifier.api_endpoint}/api/sites/multiscreen/{test_site_id}/activities"
+                
+                auth_string = f"{verifier.api_username}:{verifier.api_password}"
+                auth_bytes = auth_string.encode('ascii')
+                auth_header = base64.b64encode(auth_bytes).decode('ascii')
+                
+                headers = {
+                    'Authorization': f'Basic {auth_header}',
+                    'Content-Type': 'application/json'
+                }
+                
+                with st.spinner("Rufe Activities ab..."):
+                    import requests
+                    activities_response = requests.get(activities_url, headers=headers, params={'limit': 20})
+                
+                if activities_response.status_code == 200:
+                    activities_data = activities_response.json()
+                    st.success(f"✅ {len(activities_data.get('results', []))} Activities gefunden")
+                    
+                    # Suche nach Unpublish-Events
+                    unpublish_events = []
+                    publish_events = []
+                    
+                    for activity in activities_data.get('results', []):
+                        if activity.get('activity') == 'site_unpublished':
+                            unpublish_events.append({
+                                'Date': activity.get('date'),
+                                'User': activity.get('account_name'),
+                                'Source': activity.get('source')
+                            })
+                        elif activity.get('activity') == 'site_published':
+                            publish_events.append({
+                                'Date': activity.get('date'),
+                                'User': activity.get('account_name'),
+                                'Source': activity.get('source')
+                            })
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write("**🔴 Unpublish Events:**")
+                        if unpublish_events:
+                            for event in unpublish_events[:3]:  # Zeige max 3
+                                st.info(f"📅 {event['Date']}\n👤 {event['User']}")
+                        else:
+                            st.warning("Keine Unpublish-Events gefunden")
+                    
+                    with col2:
+                        st.write("**🟢 Publish Events:**")
+                        if publish_events:
+                            for event in publish_events[:3]:  # Zeige max 3
+                                st.success(f"📅 {event['Date']}\n👤 {event['User']}")
+                        else:
+                            st.warning("Keine Publish-Events gefunden")
+                    
+                    # Raw Activities anzeigen
+                    with st.expander("🔧 Alle Activities (Raw)"):
+                        st.json(activities_data)
+                else:
+                    st.error(f"❌ Activities API Error: {activities_response.status_code}")
+                    st.text(activities_response.text)
+            
             # Publishing History falls vorhanden
             if result.get('publish_history'):
                 st.subheader("📅 Publishing History")
