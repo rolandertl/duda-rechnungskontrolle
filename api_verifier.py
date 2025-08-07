@@ -1,6 +1,6 @@
 """
 Duda API Verifier Klasse mit erweiterten Debug-Features
-Version 28: Apps erben Unpublish-Datum von Lizenzen
+Version 29: Korrekte Activity-Verarbeitung und intelligente Unpublish-Erkennung
 """
 
 import streamlit as st
@@ -168,22 +168,23 @@ class DudaAPIVerifier:
                 data = response.json()
                 
                 # Zusätzlich Publishing-Historie abrufen
-                publish_history = self.get_publish_history(site_id)
+                publish_info = self.get_publish_info(site_id)
                 
                 return {
-                    'is_published': data.get('publish_status') == 'PUBLISHED',  # KORREKTUR!
-                    'publish_status': data.get('publish_status', 'unknown'),     # Original-Wert beibehalten
-                    'last_published': data.get('last_published_date'),           # KORREKTUR!
-                    'first_published': data.get('first_published_date'),         # NEU!
-                    'unpublication_date': data.get('unpublication_date'),        # Falls verfügbar
+                    'is_published': data.get('publish_status') == 'PUBLISHED',
+                    'publish_status': data.get('publish_status', 'unknown'),
+                    'last_published': data.get('last_published_date'),
+                    'first_published': data.get('first_published_date'),
+                    'unpublication_date': publish_info.get('last_unpublish_date') if publish_info else None,  # Aus Activities!
                     'site_status': data.get('site_status', 'unknown'),
-                    'publish_history': publish_history,
+                    'publish_history': publish_info.get('history', []) if publish_info else [],
                     'site_domain': data.get('site_domain', ''),
                     'fqdn': data.get('fqdn', ''),
-                    'preview_url': data.get('preview_site_url', ''),             # KORREKTUR!
+                    'preview_url': data.get('preview_site_url', ''),
                     'api_response_code': response.status_code,
-                    'creation_date': data.get('creation_date'),                  # NEU!
-                    'modification_date': data.get('modification_date')           # NEU!
+                    'creation_date': data.get('creation_date'),
+                    'modification_date': data.get('modification_date'),
+                    'is_currently_offline': publish_info.get('is_currently_offline', False) if publish_info else False
                 }
             elif response.status_code == 404:
                 return {
@@ -212,13 +213,13 @@ class DudaAPIVerifier:
         except Exception as e:
             return {'error': str(e), 'api_response_code': 500}
     
-    def get_publish_history(self, site_id):
-        """Holt die Publishing-Historie einer Site"""
+    def get_publish_info(self, site_id):
+        """Holt die Publishing-Informationen einer Site und bestimmt den aktuellen Status"""
         if not self.api_available:
             return None
             
         try:
-            # API Endpoint für Site Activities (Publishing-Historie)
+            # API Endpoint für Site Activities
             url = f"{self.api_endpoint}/api/sites/multiscreen/{site_id}/activities"
             
             auth_string = f"{self.api_username}:{self.api_password}"
@@ -240,27 +241,80 @@ class DudaAPIVerifier:
             response = requests.get(url, headers=headers, params=params, timeout=10)
             
             if response.status_code == 200:
-                activities = response.json()
+                data = response.json()
+                # WICHTIG: Activities sind im 'results' Array!
+                activities = data.get('results', [])
                 
-                # Nach Publish/Unpublish Aktivitäten filtern
-                publish_activities = []
+                if self.debug_mode:
+                    st.write(f"📋 Gefundene Activities für {site_id}: {len(activities)}")
+                
+                # Neueste unpublish und publish Daten finden
+                last_unpublish_date = None
+                last_unpublish_info = None
+                last_publish_date = None
+                last_publish_info = None
+                publish_history = []
+                
                 for activity in activities:
-                    # WICHTIG: Feld heißt 'activity', nicht 'activity_type'!
                     activity_type = activity.get('activity', '').lower()
-                    if any(term in activity_type for term in ['publish', 'unpublish']):
-                        publish_activities.append({
+                    activity_date = activity.get('date')
+                    
+                    # Nur publish/unpublish Activities verarbeiten
+                    if 'publish' in activity_type and activity_date:
+                        activity_info = {
                             'type': activity_type,
-                            'date': activity.get('date'),
-                            'user': activity.get('account_name', activity.get('user', 'System')),
+                            'date': activity_date,
+                            'user': activity.get('account_name', 'System'),
                             'source': activity.get('source', ''),
                             'description': activity.get('description', '')
-                        })
+                        }
+                        
+                        # Für History sammeln (max 10)
+                        if len(publish_history) < 10:
+                            publish_history.append(activity_info)
+                        
+                        # Neueste Events tracken
+                        if activity_type == 'site_unpublished' and not last_unpublish_date:
+                            last_unpublish_date = activity_date
+                            last_unpublish_info = activity_info
+                        elif activity_type == 'site_published' and not last_publish_date:
+                            last_publish_date = activity_date
+                            last_publish_info = activity_info
+                        
+                        # Wenn beide gefunden, können wir aufhören
+                        if last_unpublish_date and last_publish_date:
+                            break
                 
-                return publish_activities[:10]  # Nur die letzten 10 Publish-Aktivitäten
+                if self.debug_mode and (last_unpublish_date or last_publish_date):
+                    st.write(f"📅 Letztes Unpublish: {last_unpublish_date}")
+                    st.write(f"📅 Letztes Publish: {last_publish_date}")
+                
+                # Bestimme ob Site aktuell offline ist
+                is_currently_offline = False
+                if last_unpublish_date:
+                    if not last_publish_date:
+                        # Nie wieder published nach unpublish
+                        is_currently_offline = True
+                    elif last_unpublish_date > last_publish_date:
+                        # Unpublish ist neuer als publish
+                        is_currently_offline = True
+                
+                return {
+                    'last_unpublish_date': last_unpublish_date,
+                    'last_unpublish_info': last_unpublish_info,
+                    'last_publish_date': last_publish_date,
+                    'last_publish_info': last_publish_info,
+                    'is_currently_offline': is_currently_offline,
+                    'history': publish_history
+                }
             else:
+                if self.debug_mode:
+                    st.write(f"❌ Activities API Error: {response.status_code}")
                 return None
                 
-        except Exception:
+        except Exception as e:
+            if self.debug_mode:
+                st.write(f"❌ Activities Exception: {str(e)}")
             return None
     
     def analyze_api_result(self, site_id, api_result, original_issue):
@@ -285,21 +339,19 @@ class DudaAPIVerifier:
         
         # Fall 2: Site ist offline → weitere Analyse
         unpublish_date = api_result.get('unpublication_date')
-        publish_history = api_result.get('publish_history', [])
+        is_currently_offline = api_result.get('is_currently_offline', False)
+        
+        # Zusätzliche Validierung: Ist die Site wirklich offline?
+        if not is_currently_offline and unpublish_date:
+            # Die Activities zeigen, dass die Site wieder online ist
+            return {
+                'classification': 'false_positive',
+                'reason': 'Site wurde nach Unpublish wieder published (Activities-Check)',
+                'recommendation': 'Verrechnung berechtigt - Site ist wieder online'
+            }
         
         # Prüfe wann die Site zuletzt unpublished wurde
-        days_offline = days_since_date(unpublish_date)
-        
-        # Wenn kein Unpublish-Datum in API, versuche es aus der History zu extrahieren
-        if days_offline is None and publish_history:
-            for activity in publish_history:
-                if 'unpublish' in activity.get('type', '').lower():
-                    activity_date = activity.get('date')
-                    if activity_date:
-                        days_offline = days_since_date(activity_date)
-                        unpublish_date = activity_date  # WICHTIG: Datum speichern!
-                        if days_offline is not None:
-                            break
+        days_offline = days_since_date(unpublish_date) if unpublish_date else None
         
         # Kalendermonat-Regel anwenden (≤31 Tage)
         if days_offline is not None and days_offline <= 31:
@@ -307,7 +359,7 @@ class DudaAPIVerifier:
                 'classification': 'false_positive',
                 'reason': f'Site offline seit {days_offline} Tagen (≤31 Tage = Kalendermonat-Regel)',
                 'recommendation': 'Verrechnung berechtigt - im aktuellen Abrechnungsmonat offline gegangen',
-                'unpublish_date': unpublish_date  # Datum für Apps weitergeben
+                'unpublish_date': unpublish_date
             }
         
         # Fall 3: Echtes Problem - Site ist länger offline oder unbekanntes Offline-Datum
@@ -317,7 +369,7 @@ class DudaAPIVerifier:
             'classification': 'confirmed_issue',
             'reason': f'Site ist offline {offline_info}',
             'recommendation': 'Manuelle Kontrolle - möglicherweise nicht berechtigt verrechnet',
-            'unpublish_date': unpublish_date  # Datum für Apps weitergeben
+            'unpublish_date': unpublish_date
         }
     
     def verify_issues(self, issues_df):
@@ -330,7 +382,7 @@ class DudaAPIVerifier:
         api_errors = []
         api_calls_made = 0
         
-        # Cache für API-Ergebnisse (um doppelte Calls für gleiche Sites zu vermeiden)
+        # Cache für API-Ergebnisse (Site-ID → Result)
         api_cache = {}
         
         st.info(f"🔍 Finale Verifikation von {len(issues_df)} problematischen Sites über Duda API...")
@@ -346,35 +398,30 @@ class DudaAPIVerifier:
             # Progress Update
             progress = (idx + 1) / len(issues_df)
             progress_bar.progress(progress)
-            status_text.text(f"Prüfe Site {idx + 1}/{len(issues_df)}: {site_id}")
+            status_text.text(f"Prüfe Site {idx + 1}/{len(issues_df)}: {site_id} ({product_type})")
             
             # API Call (mit Cache)
-            if site_id in api_cache:
-                api_result = api_cache[site_id]
-                st.write(f"📋 Verwende Cache für {site_id}")
+            cache_key = site_id  # Verwende nur Site-ID als Cache-Key
+            
+            if cache_key in api_cache:
+                api_result = api_cache[cache_key]
+                if self.debug_mode:
+                    st.write(f"📋 Cache-Treffer für {site_id}")
             else:
                 api_result = self.get_site_status(site_id)
-                api_cache[site_id] = api_result
+                api_cache[cache_key] = api_result
                 api_calls_made += 1
+                
+                # Kleine Pause um API nicht zu überlasten
+                if api_calls_made > 1:
+                    time.sleep(0.2)
             
-            # Für Apps: Wenn kein Unpublish-Datum gefunden, versuche es von der Lizenz zu holen
+            # Für Apps: Wenn die Site selbst keine Activities hat, ist das normal
+            # Apps teilen sich die Site-ID mit der Lizenz, haben aber keine eigenen Activities
             if is_app_product(product_type) and api_result and 'error' not in api_result:
-                if not api_result.get('unpublication_date') and not api_result.get('publish_history'):
-                    # Versuche die Lizenz-Site zu finden und deren Status zu holen
-                    if site_id in api_cache:
-                        license_result = api_cache[site_id]
-                    else:
-                        st.write(f"🔍 Hole Lizenz-Daten für App {product_type}: {site_id}")
-                        license_result = self.get_site_status(site_id)
-                        api_cache[site_id] = license_result
-                        api_calls_made += 1
-                    
-                    # Übertrage Unpublish-Daten von Lizenz auf App
-                    if license_result and 'error' not in license_result:
-                        api_result['unpublication_date'] = license_result.get('unpublication_date')
-                        api_result['publish_history'] = license_result.get('publish_history', [])
-                        api_result['last_published'] = license_result.get('last_published')
-                        st.write(f"📋 Unpublish-Daten von Lizenz übernommen für {product_type}")
+                # Das Unpublish-Datum sollte bereits von der Lizenz im Cache sein
+                if self.debug_mode:
+                    st.write(f"📱 App {product_type} verwendet Daten der Lizenz-Site {site_id}")
             
             # Ergebnis analysieren
             analysis = self.analyze_api_result(site_id, api_result, issue)
@@ -384,14 +431,15 @@ class DudaAPIVerifier:
             if api_result and 'error' not in api_result:
                 enriched_issue['API_Published'] = api_result.get('is_published', False)
                 enriched_issue['API_Last_Published'] = api_result.get('last_published', '')
-                # Verwende das Datum aus der Analyse (falls aus History extrahiert)
                 enriched_issue['API_Unpublish_Date'] = analysis.get('unpublish_date', api_result.get('unpublication_date', ''))
                 enriched_issue['API_Site_Domain'] = api_result.get('site_domain', '')
+                enriched_issue['API_Currently_Offline'] = api_result.get('is_currently_offline', 'Unknown')
             else:
                 enriched_issue['API_Published'] = 'ERROR'
                 enriched_issue['API_Last_Published'] = ''
                 enriched_issue['API_Unpublish_Date'] = ''
                 enriched_issue['API_Site_Domain'] = ''
+                enriched_issue['API_Currently_Offline'] = 'ERROR'
                 enriched_issue['API_Error_Details'] = api_result.get('details', '') if api_result else ''
             
             enriched_issue['API_Analysis'] = analysis['reason']
@@ -405,10 +453,6 @@ class DudaAPIVerifier:
                 verified_issues.append(enriched_issue)  # Bei API-Fehlern: Issue beibehalten
             else:  # confirmed_issue
                 verified_issues.append(enriched_issue)
-            
-            # Kleine Pause um API nicht zu überlasten
-            if idx < len(issues_df) - 1:  # Nicht bei letztem Aufruf
-                time.sleep(0.1)
         
         progress_bar.empty()
         status_text.empty()
